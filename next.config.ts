@@ -1,13 +1,30 @@
 import type { NextConfig } from "next";
 
-// เพิ่มข้อความ Log ของคุณตรงนี้
 console.log("========================================");
 console.log("🚀 Starting HR LINE Bot Server...");
 console.log("🌐 Target Port: 3333");
 console.log("========================================");
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  // 1. อนุญาตให้ ngrok เข้าถึงระบบ
+  allowedDevOrigins: [
+    "pursuit-relates-nat-class.trycloudflare.com"
+  ],
+  
+  // 2. ส่งบัตรผ่าน VIP ไปให้ ngrok ปล่อยผ่านไฟล์ CSS ทันที
+  async headers() {
+    return [
+      {
+        source: "/(.*)",
+        headers: [
+          {
+            key: "ngrok-skip-browser-warning",
+            value: "true",
+          },
+        ],
+      },
+    ];
+  },
 };
 
 export default nextConfig;

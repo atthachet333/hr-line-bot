@@ -4,52 +4,125 @@ import { useEffect, useState } from 'react';
 import liff from '@line/liff';
 
 export default function CheckInPage() {
-  const [isReady, setIsReady] = useState(false);
+  const [isMounted, setIsMounted] = useState(false);
   const [location, setLocation] = useState<{lat: number, lng: number} | null>(null);
-  const [locationError, setLocationError] = useState('');
+  const [isFetching, setIsFetching] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
+  
+  const [showPopup, setShowPopup] = useState(false);
+  const [displayName, setDisplayName] = useState("พนักงาน");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // 📌 นำลิงก์จาก Google Apps Script ของคุณมาวางแทนข้อความด้านล่างนี้ครับ
+  const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbykGb5NVbqf6oHGBkH_h0arZ9VFaCGvWUDKclK0lx7zSPs4yWgDyqXB6mnJnBVTyDdL4A/exec";
 
   useEffect(() => {
-    // อัปเดตเวลาแบบ Real-time
+    setIsMounted(true);
+    
+    // นาฬิกาเดิน
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
     
-    // ดึงตำแหน่ง GPS
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => setLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-        (err) => setLocationError('ไม่สามารถดึงตำแหน่งได้ กรุณาเปิด GPS')
-      );
-    } else {
-      setLocationError('เบราว์เซอร์ของคุณไม่รองรับ GPS');
-    }
-
+    // ตั้งค่า LIFF พร้อมดึงชื่อคนใช้งาน
     const initLiff = async () => {
       try {
-        await liff.init({ liffId: process.env.NEXT_PUBLIC_LIFF_ID || '' });
-        setIsReady(true);
-        if (!liff.isLoggedIn()) liff.login();
-      } catch (error) { console.error('LIFF Init Error:', error); }
+        await liff.init({ liffId: process.env.NEXT_PUBLIC_LIFF_ID_CHECKIN as string });
+        if (liff.isLoggedIn()) {
+          const profile = await liff.getProfile();
+          setDisplayName(profile.displayName);
+        } else if (!liff.isInClient()) {
+          liff.login();
+        }
+      } catch (err) {
+        console.error('LIFF Init Error:', err);
+      }
     };
     initLiff();
 
     return () => clearInterval(timer);
   }, []);
 
-  const handleCheckIn = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!location) return alert('กรุณารอระบบดึงพิกัด GPS ก่อนกดยืนยัน');
-    alert(`บันทึกเวลาเข้างาน: ${currentTime.toLocaleTimeString()} \nพิกัด: ${location.lat}, ${location.lng}`);
+  const fetchLocation = () => {
+    setIsFetching(true);
+
+    if (typeof window !== 'undefined' && navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          setLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+          setIsFetching(false);
+        },
+        (err) => {
+          console.warn(err);
+          alert('ดึงพิกัดไม่สำเร็จ!\nกรุณาไปที่ ตั้งค่ามือถือ > LINE > ตำแหน่งที่ตั้ง > เลือก "ในระหว่างใช้แอป"');
+          setIsFetching(false);
+        },
+        { enableHighAccuracy: false, timeout: 10000, maximumAge: 0 }
+      );
+    } else {
+      alert('เบราว์เซอร์ของคุณไม่รองรับ GPS');
+      setIsFetching(false);
+    }
   };
+
+  const handleCheckIn = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!location) return alert("กรุณากดดึงพิกัด GPS ก่อนครับ");
+    
+    setIsSubmitting(true);
+
+    // เตรียมข้อมูลส่งเข้า Sheet
+    const payload = {
+      action: 'checkin',
+      displayName: displayName,
+      time: currentTime.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      lat: location.lat,
+      lng: location.lng
+    };
+
+    try {
+      await fetch(SCRIPT_URL, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      setShowPopup(true); // โชว์ Popup เมื่อส่งสำเร็จ
+    } catch (err) {
+      alert("ส่งข้อมูลไม่สำเร็จ กรุณาลองใหม่");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const closeLiff = () => {
+    if (liff.isInClient()) {
+      liff.closeWindow();
+    } else {
+      setShowPopup(false);
+    }
+  };
+
+  if (!isMounted) {
+    return (
+      <div className="min-h-screen bg-gray-100 flex items-center justify-center font-bold text-blue-600">
+        กำลังโหลดระบบ...
+      </div>
+    );
+  }
 
   return (
     <>
-      <style dangerouslySetInnerHTML={{__html: `@import url('https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700&display=swap'); .font-prompt { font-family: 'Prompt', sans-serif; }`}} />
-      <div className="min-h-screen bg-gray-100 flex justify-center font-prompt text-black">
-        <div className="w-full max-w-md bg-white min-h-screen shadow-2xl sm:rounded-3xl sm:my-8 sm:min-h-[calc(100vh-4rem)] overflow-hidden relative">
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700&display=swap');
+        .font-prompt { font-family: 'Prompt', sans-serif; }
+      `}</style>
+
+      <div className="min-h-screen bg-gray-100 flex justify-center font-prompt text-black relative">
+        <div className="w-full max-w-md bg-white min-h-screen shadow-2xl sm:rounded-3xl sm:my-8 sm:min-h-[calc(100vh-4rem)] overflow-hidden">
           
           <div className="bg-white pt-10 pb-6 px-6 text-center border-b border-gray-100">
             <div className="w-16 h-16 bg-blue-600 rounded-full flex items-center justify-center text-3xl mb-4 shadow-lg text-white mx-auto"> 📍 </div>
             <h1 className="text-2xl font-bold text-gray-900">แจ้งเข้างาน</h1>
+            <p className="text-sm text-gray-500 mt-1">คุณ {displayName}</p>
           </div>
 
           <form onSubmit={handleCheckIn} className="px-8 py-8 space-y-6">
@@ -58,28 +131,59 @@ export default function CheckInPage() {
               <h2 className="text-4xl font-bold text-blue-600 tracking-wider">
                 {currentTime.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
               </h2>
-              <p className="text-sm text-gray-700 mt-2">{currentTime.toLocaleDateString('th-TH', { year: 'numeric', month: 'long', day: 'numeric' })}</p>
+              <p className="text-sm text-gray-700 mt-2">
+                {currentTime.toLocaleDateString('th-TH', { year: 'numeric', month: 'long', day: 'numeric' })}
+              </p>
             </div>
 
             <div>
               <label className="block text-sm font-semibold text-gray-900 mb-2">ตำแหน่งของคุณ (GPS)</label>
-              <div className="w-full px-4 py-4 bg-white border-2 border-gray-200 rounded-xl text-sm flex items-center justify-between">
+              <div className="w-full px-4 py-4 bg-white border-2 border-gray-200 rounded-xl text-sm flex flex-col items-center justify-center gap-3">
                 {location ? (
-                  <span className="text-green-600 font-medium flex items-center gap-2">✅ ดึงพิกัดสำเร็จ ({location.lat.toFixed(4)}, {location.lng.toFixed(4)})</span>
-                ) : locationError ? (
-                  <span className="text-red-500">{locationError}</span>
+                  <span className="text-green-600 font-bold flex items-center gap-2">✅ ดึงพิกัดสำเร็จ ({location.lat.toFixed(4)}, {location.lng.toFixed(4)})</span>
                 ) : (
-                  <span className="text-gray-500 animate-pulse">กำลังค้นหาพิกัด...</span>
+                  <button 
+                    type="button" 
+                    onClick={fetchLocation} 
+                    disabled={isFetching}
+                    className="bg-blue-100 text-blue-700 px-4 py-3 rounded-lg font-bold w-full flex items-center justify-center gap-2 transition-all hover:bg-blue-200 active:scale-95 cursor-pointer"
+                  >
+                    {isFetching ? '⏳ กำลังค้นหา...' : '📍 กดเพื่อดึงพิกัด GPS'}
+                  </button>
                 )}
               </div>
             </div>
 
             <div className="pt-8">
-              <button type="submit" className={`w-full py-4 rounded-xl font-bold text-lg transition-colors shadow-lg ${location ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-blue-200' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`} disabled={!location}>
-                ยืนยันเข้างาน
+              <button 
+                type="submit" 
+                className={`w-full py-4 rounded-xl font-bold text-lg transition-colors shadow-lg flex justify-center items-center gap-2 ${location && !isSubmitting ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-blue-200 cursor-pointer' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`} 
+                disabled={!location || isSubmitting}
+              >
+                {isSubmitting ? 'กำลังบันทึก...' : 'ยืนยันเข้างาน'}
               </button>
             </div>
           </form>
+
+          {/* Popup Success Overlay */}
+          {showPopup && (
+            <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm px-4 animate-fade-in">
+              <div className="bg-white w-full max-w-sm rounded-3xl p-8 text-center shadow-2xl">
+                <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center text-5xl mx-auto mb-6 text-green-500">
+                  ✅
+                </div>
+                <h3 className="text-2xl font-bold text-gray-900 mb-2">บันทึกสำเร็จ!</h3>
+                <p className="text-gray-500 mb-8">บันทึกเวลาเข้างานเรียบร้อย ขอให้เป็นวันที่ดีครับ</p>
+                <button 
+                  onClick={closeLiff}
+                  className="w-full bg-blue-600 text-white py-3.5 rounded-xl font-bold text-lg hover:bg-blue-700"
+                >
+                  ปิดหน้าต่าง
+                </button>
+              </div>
+            </div>
+          )}
+
         </div>
       </div>
     </>
