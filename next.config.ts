@@ -8,7 +8,7 @@ console.log("========================================");
 const nextConfig: NextConfig = {
   // 1. อนุญาตให้ ngrok เข้าถึงระบบ
   allowedDevOrigins: [
-    "pursuit-relates-nat-class.trycloudflare.com"
+    "hear-sponsored-colon-phoenix.trycloudflare.com"
   ],
   
   // 2. ส่งบัตรผ่าน VIP ไปให้ ngrok ปล่อยผ่านไฟล์ CSS ทันที

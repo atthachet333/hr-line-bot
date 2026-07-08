@@ -10,13 +10,45 @@ export default function LeavePage() {
   const [showPopup, setShowPopup] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // 📌 นำลิงก์จาก Google Apps Script ของคุณมาวางตรงนี้!
-  // ตัวอย่าง: "https://script.google.com/macros/s/AKfycb.../exec"
-  const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbykGb5NVbqf6oHGBkH_h0arZ9VFaCGvWUDKclK0lx7zSPs4yWgDyqXB6mnJnBVTyDdL4A/exec"; 
+  const [userId, setUserId] = useState(''); // ✅ 1. เพิ่ม State เก็บ ID
+  const [empId, setEmpId] = useState('');
+  const [empName, setEmpName] = useState('');
+  const [position, setPosition] = useState('');
+  const [department, setDepartment] = useState('');
+  const [isLoadingProfile, setIsLoadingProfile] = useState(true);
 
   useEffect(() => {
     setIsMounted(true);
-    liff.init({ liffId: process.env.NEXT_PUBLIC_LIFF_ID || '' }).catch(console.error);
+    const initLiff = async () => {
+      try {
+        await liff.init({ liffId: process.env.NEXT_PUBLIC_LIFF_ID || '' });
+        if (liff.isLoggedIn()) {
+          const profile = await liff.getProfile();
+          setUserId(profile.userId); // ✅ 2. บันทึก ID ลง State
+          
+          const res = await fetch('/api/balance', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'getBalance', userId: profile.userId })
+          });
+          
+          if (res.ok) {
+            const result = await res.json();
+            if (result.status === 'success' && result.data) {
+              if (result.data.name && result.data.name !== "รอระบุชื่อ") setEmpName(result.data.name);
+              if (result.data.empId) setEmpId(result.data.empId);
+              if (result.data.position) setPosition(result.data.position);
+              if (result.data.department) setDepartment(result.data.department);
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Error loading profile:", err);
+      } finally {
+        setIsLoadingProfile(false);
+      }
+    };
+    initLiff();
   }, []);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -28,10 +60,11 @@ export default function LeavePage() {
 
     const data = {
       action: 'leave',
-      empId: formData.get('empId'),
-      name: formData.get('empName'),
-      position: formData.get('position'),     // ✅ ส่งค่าตำแหน่ง
-      department: formData.get('department'), // ✅ ส่งค่าแผนก
+      userId: userId, // ✅ 3. ส่ง userId พ่วงไปด้วยเพื่อให้ชีตตัดวันลาถูกคน
+      empId: empId,
+      name: empName,
+      position: position,
+      department: department,
       leaveType: finalLeaveType,
       startDate: formData.get('startDate'),
       endDate: formData.get('endDate'),
@@ -39,9 +72,8 @@ export default function LeavePage() {
     };
 
     try {
-      await fetch(SCRIPT_URL, {
+      await fetch('/api/balance', {
         method: 'POST',
-        mode: 'no-cors',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
@@ -55,7 +87,7 @@ export default function LeavePage() {
 
   const closeLiff = () => liff.isInClient() ? liff.closeWindow() : setShowPopup(false);
 
-  if (!isMounted) return <div className="min-h-screen bg-slate-50 flex items-center justify-center font-bold text-blue-600 tracking-wide">Initializing System...</div>;
+  if (!isMounted) return null;
 
   return (
     <>
@@ -63,87 +95,68 @@ export default function LeavePage() {
       <div className="min-h-screen bg-slate-50 flex justify-center font-prompt text-slate-800 relative">
         <div className="w-full max-w-md bg-white min-h-screen shadow-xl sm:rounded-3xl sm:my-8 sm:min-h-[calc(100vh-4rem)] overflow-hidden pb-12">
           
-          {/* Header Section */}
           <div className="bg-gradient-to-r from-blue-700 to-indigo-600 pt-12 pb-8 px-6 text-center rounded-b-[2.5rem] shadow-md">
-            <div className="w-20 h-20 bg-white/20 backdrop-blur-md rounded-2xl flex items-center justify-center text-4xl mb-4 shadow-inner mx-auto border border-white/30">
-              📝
-            </div>
+            <div className="w-20 h-20 bg-white/20 backdrop-blur-md rounded-2xl flex items-center justify-center text-4xl mb-4 shadow-inner mx-auto border border-white/30">📝</div>
             <h1 className="text-3xl font-bold text-white tracking-wide">แบบฟอร์มลางาน</h1>
             <p className="text-sm text-blue-100 mt-2 font-light">Leave Request Application</p>
           </div>
 
           <form onSubmit={handleSubmit} className="px-6 py-8 space-y-8">
             
-            {/* Section 1: ข้อมูลพนักงาน */}
-            <div className="bg-slate-50 p-5 rounded-2xl border border-slate-100 shadow-sm space-y-4">
+            <div className="bg-slate-50 p-5 rounded-2xl border border-slate-100 shadow-sm space-y-4 relative">
+              {isLoadingProfile && (
+                 <div className="absolute inset-0 bg-white/70 backdrop-blur-sm z-10 flex flex-col items-center justify-center rounded-2xl">
+                    <div className="w-8 h-8 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin"></div>
+                    <p className="text-xs text-indigo-600 mt-2 font-semibold">กำลังดึงข้อมูล...</p>
+                 </div>
+              )}
               <h3 className="text-sm font-bold text-indigo-600 uppercase tracking-wider mb-2 flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-indigo-500"></span> ข้อมูลพนักงาน
               </h3>
-              
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-semibold text-slate-500 mb-1.5">รหัสพนักงาน <span className="text-red-500">*</span></label>
-                  <input type="text" name="empId" required className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-sm" placeholder="EMP001" />
+                  <input type="text" value={empId} onChange={(e) => setEmpId(e.target.value)} required className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-sm" placeholder="EMP001" />
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-slate-500 mb-1.5">ชื่อ-นามสกุล <span className="text-red-500">*</span></label>
-                  <input type="text" name="empName" required className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-sm" placeholder="ระบุชื่อจริง" />
+                  <input type="text" value={empName} onChange={(e) => setEmpName(e.target.value)} required className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-sm" placeholder="ระบุชื่อจริง" />
                 </div>
               </div>
-
-              {/* ✅ เอากลับมาแล้ว: ตำแหน่ง และ แผนก */}
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-semibold text-slate-500 mb-1.5">ตำแหน่ง <span className="text-red-500">*</span></label>
-                  <input type="text" name="position" required className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-sm" placeholder="ตำแหน่งงาน" />
+                  <input type="text" value={position} onChange={(e) => setPosition(e.target.value)} required className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-sm" placeholder="ตำแหน่งงาน" />
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-slate-500 mb-1.5">แผนก <span className="text-red-500">*</span></label>
-                  <input type="text" name="department" required className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-sm" placeholder="ฝ่าย/แผนก" />
+                  <input type="text" value={department} onChange={(e) => setDepartment(e.target.value)} required className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-sm" placeholder="ฝ่าย/แผนก" />
                 </div>
               </div>
             </div>
 
-            {/* Section 2: รายละเอียดการลา */}
             <div className="space-y-4">
               <h3 className="text-sm font-bold text-indigo-600 uppercase tracking-wider mb-2 flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-indigo-500"></span> รายละเอียดการลา
               </h3>
-
               <div>
                 <label className="block text-sm font-semibold text-slate-700 mb-2">ประเภทการลา <span className="text-red-500">*</span></label>
                 <div className="relative">
-                  <select 
-                    value={leaveType} 
-                    onChange={(e) => setLeaveType(e.target.value)} 
-                    className="w-full px-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all appearance-none font-medium text-slate-700"
-                  >
+                  <select value={leaveType} onChange={(e) => setLeaveType(e.target.value)} className="w-full px-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all appearance-none font-medium text-slate-700">
                     <option value="ลาป่วย">🤒 ลาป่วย</option>
                     <option value="ลากิจ">💼 ลากิจ</option>
                     <option value="ลาพักร้อน">🌴 ลาพักร้อน</option>
                     <option value="ลาอื่นๆ">✨ อื่นๆ (โปรดระบุ)</option>
                   </select>
-                  <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-4 text-slate-400">
-                    ▼
-                  </div>
+                  <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-4 text-slate-400">▼</div>
                 </div>
               </div>
-
-              {/* ✅ ช่องพิมพ์ประเภทการลาอื่นๆ */}
               {leaveType === 'ลาอื่นๆ' && (
                 <div className="animate-fade-in pt-1">
                   <label className="block text-xs font-semibold text-indigo-600 mb-1.5">ระบุประเภทการลา <span className="text-red-500">*</span></label>
-                  <input 
-                    type="text" 
-                    required 
-                    value={otherLeaveType}
-                    onChange={(e) => setOtherLeaveType(e.target.value)}
-                    className="w-full px-4 py-3 bg-indigo-50/50 border border-indigo-100 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500 transition-all text-sm text-indigo-900 placeholder-indigo-300" 
-                    placeholder="เช่น ลาคลอด, ลาบวช..." 
-                  />
+                  <input type="text" required value={otherLeaveType} onChange={(e) => setOtherLeaveType(e.target.value)} className="w-full px-4 py-3 bg-indigo-50/50 border border-indigo-100 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500 transition-all text-sm text-indigo-900 placeholder-indigo-300" placeholder="เช่น ลาคลอด, ลาบวช..." />
                 </div>
               )}
-
               <div className="grid grid-cols-2 gap-4 pt-2">
                 <div>
                   <label className="block text-xs font-semibold text-slate-500 mb-1.5">ตั้งแต่วันที่ <span className="text-red-500">*</span></label>
@@ -154,7 +167,6 @@ export default function LeavePage() {
                   <input type="date" name="endDate" required className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm text-slate-600" />
                 </div>
               </div>
-
               <div className="pt-2">
                 <label className="block text-sm font-semibold text-slate-700 mb-2">เหตุผลการลา <span className="text-red-500">*</span></label>
                 <textarea name="reason" required className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-sm text-slate-700 h-24 resize-none" placeholder="โปรดระบุเหตุผลอย่างละเอียด..."></textarea>
@@ -176,7 +188,6 @@ export default function LeavePage() {
             </div>
           </form>
 
-          {/* ✅ Premium Success Popup */}
           {showPopup && (
             <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm px-5 animate-fade-in">
               <div className="bg-white w-full max-w-[320px] rounded-[2rem] p-8 text-center shadow-2xl transform transition-all scale-100">
@@ -184,11 +195,8 @@ export default function LeavePage() {
                   <span className="text-white drop-shadow-md">✓</span>
                 </div>
                 <h3 className="text-2xl font-bold text-slate-800 mb-2">ส่งคำขอสำเร็จ</h3>
-                <p className="text-slate-500 mb-8 text-sm leading-relaxed">ข้อมูลการลางานของคุณถูกส่งเข้าระบบ HR เรียบร้อยแล้ว โปรดรอการอนุมัติ</p>
-                <button 
-                  onClick={closeLiff}
-                  className="w-full bg-slate-100 text-slate-700 py-3.5 rounded-xl font-bold text-base hover:bg-slate-200 transition-colors"
-                >
+                <p className="text-slate-500 mb-8 text-sm leading-relaxed">ข้อมูลการลางานของคุณถูกส่งเข้าระบบ HR เรียบร้อยแล้ว</p>
+                <button onClick={closeLiff} className="w-full bg-slate-100 text-slate-700 py-3.5 rounded-xl font-bold text-base hover:bg-slate-200 transition-colors">
                   ปิดหน้าต่าง
                 </button>
               </div>
