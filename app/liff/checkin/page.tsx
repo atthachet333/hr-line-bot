@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from 'react';
 import liff from '@line/liff';
+import { useMounted } from '@/lib/hooks/use-mounted';
 
 export default function CheckInPage() {
-  const [isMounted, setIsMounted] = useState(false);
+  const isMounted = useMounted();
   const [location, setLocation] = useState<{lat: number, lng: number} | null>(null);
   const [isFetching, setIsFetching] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
@@ -12,13 +13,12 @@ export default function CheckInPage() {
   const [showPopup, setShowPopup] = useState(false);
   const [displayName, setDisplayName] = useState("พนักงาน");
   const [isSubmitting, setIsSubmitting] = useState(false);
-
-  // 📌 นำลิงก์จาก Google Apps Script ของคุณมาวางแทนข้อความด้านล่างนี้ครับ
-  const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbykGb5NVbqf6oHGBkH_h0arZ9VFaCGvWUDKclK0lx7zSPs4yWgDyqXB6mnJnBVTyDdL4A/exec";
+  const [errorMsg, setErrorMsg] = useState('');
+  const [clientRequestId] = useState(() =>
+    typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
+  );
 
   useEffect(() => {
-    setIsMounted(true);
-    
     // นาฬิกาเดิน
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
     
@@ -66,28 +66,41 @@ export default function CheckInPage() {
   const handleCheckIn = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!location) return alert("กรุณากดดึงพิกัด GPS ก่อนครับ");
-    
+    if (isSubmitting) return; // กันกดซ้ำระหว่างส่ง
+
+    setErrorMsg('');
     setIsSubmitting(true);
 
-    // เตรียมข้อมูลส่งเข้า Sheet
-    const payload = {
-      action: 'checkin',
-      displayName: displayName,
-      time: currentTime.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-      lat: location.lat,
-      lng: location.lng
-    };
-
     try {
-      await fetch(SCRIPT_URL, {
+      const idToken = liff.getIDToken();
+      const accessToken = liff.getAccessToken();
+      if (!idToken && !accessToken) {
+        setErrorMsg('ไม่สามารถยืนยันตัวตนได้ กรุณาเปิดหน้านี้จากแอป LINE');
+        setIsSubmitting(false);
+        return;
+      }
+
+      const res = await fetch('/api/attendance/check-in', {
         method: 'POST',
-        mode: 'no-cors',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        body: JSON.stringify({
+          idToken,
+          accessToken,
+          clientRequestId,
+          time: currentTime.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          lat: location.lat,
+          lng: location.lng,
+        })
       });
-      setShowPopup(true); // โชว์ Popup เมื่อส่งสำเร็จ
-    } catch (err) {
-      alert("ส่งข้อมูลไม่สำเร็จ กรุณาลองใหม่");
+
+      const result = await res.json().catch(() => ({}));
+      if (res.ok && result.success) {
+        setShowPopup(true); // โชว์ Popup เมื่อบันทึกจริงสำเร็จเท่านั้น
+      } else {
+        setErrorMsg(result.message || result.error || 'บันทึกเวลาเข้างานไม่สำเร็จ กรุณาลองใหม่');
+      }
+    } catch {
+      setErrorMsg('ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้ กรุณาลองใหม่');
     } finally {
       setIsSubmitting(false);
     }
@@ -154,9 +167,15 @@ export default function CheckInPage() {
               </div>
             </div>
 
+            {errorMsg && (
+              <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-xl px-4 py-3 text-center">
+                {errorMsg}
+              </div>
+            )}
+
             <div className="pt-8">
-              <button 
-                type="submit" 
+              <button
+                type="submit"
                 className={`w-full py-4 rounded-xl font-bold text-lg transition-colors shadow-lg flex justify-center items-center gap-2 ${location && !isSubmitting ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-blue-200 cursor-pointer' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`} 
                 disabled={!location || isSubmitting}
               >

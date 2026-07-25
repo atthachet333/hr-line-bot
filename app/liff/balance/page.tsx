@@ -3,17 +3,23 @@
 import { useState, useEffect } from 'react';
 import liff from '@line/liff';
 
+interface LeaveHistory {
+  type: string;
+  date: string;
+  status: string;
+  statusColor: string;
+}
+
 export default function LeaveBalancePage() {
   const [activeTab, setActiveTab] = useState('balance');
   const [loading, setLoading] = useState(true);
-  const [userId, setUserId] = useState(''); 
-  
+
   const [balances, setBalances] = useState([
     { type: 'ลาป่วย', total: 30, used: 0, icon: '🤒' },
     { type: 'ลากิจ', total: 6, used: 0, icon: '💼' },
     { type: 'ลาพักร้อน', total: 6, used: 0, icon: '🌴' },
   ]);
-  const [histories, setHistories] = useState<any[]>([]);
+  const [histories, setHistories] = useState<LeaveHistory[]>([]);
 
   useEffect(() => {
     const init = async () => {
@@ -22,13 +28,12 @@ export default function LeaveBalancePage() {
         
         if (liff.isLoggedIn()) {
           const profile = await liff.getProfile();
-          setUserId(profile.userId);
-          
+
           // ✅ เปลี่ยนมายิงเข้า API Route ของตัวเองแทน เพื่อแก้ปัญหา Load Failed
           const res = await fetch('/api/balance', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' }, 
-            body: JSON.stringify({ action: 'getBalance', userId: profile.userId })
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId: profile.userId })
           });
           
           if (res.ok) {

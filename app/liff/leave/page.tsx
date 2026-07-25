@@ -2,36 +2,40 @@
 
 import { useEffect, useState } from 'react';
 import liff from '@line/liff';
+import { useMounted } from '@/lib/hooks/use-mounted';
 
 export default function LeavePage() {
-  const [isMounted, setIsMounted] = useState(false);
+  const isMounted = useMounted();
   const [leaveType, setLeaveType] = useState('ลาป่วย');
   const [otherLeaveType, setOtherLeaveType] = useState('');
   const [showPopup, setShowPopup] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const [userId, setUserId] = useState(''); // ✅ 1. เพิ่ม State เก็บ ID
   const [empId, setEmpId] = useState('');
   const [empName, setEmpName] = useState('');
   const [position, setPosition] = useState('');
   const [department, setDepartment] = useState('');
   const [isLoadingProfile, setIsLoadingProfile] = useState(true);
+  const [errorMsg, setErrorMsg] = useState('');
+  // Idempotency key generated once per form mount so retries don't duplicate.
+  const [clientRequestId] = useState(() =>
+    typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
+  );
 
   useEffect(() => {
-    setIsMounted(true);
     const initLiff = async () => {
       try {
         await liff.init({ liffId: process.env.NEXT_PUBLIC_LIFF_ID || '' });
         if (liff.isLoggedIn()) {
           const profile = await liff.getProfile();
-          setUserId(profile.userId); // ✅ 2. บันทึก ID ลง State
-          
+
+          // Prefill for display only — the server re-derives identity from the token.
           const res = await fetch('/api/balance', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'getBalance', userId: profile.userId })
+            body: JSON.stringify({ userId: profile.userId })
           });
-          
+
           if (res.ok) {
             const result = await res.json();
             if (result.status === 'success' && result.data) {
@@ -41,6 +45,8 @@ export default function LeavePage() {
               if (result.data.department) setDepartment(result.data.department);
             }
           }
+        } else if (!liff.isInClient()) {
+          liff.login();
         }
       } catch (err) {
         console.error("Error loading profile:", err);
@@ -53,33 +59,46 @@ export default function LeavePage() {
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    if (isSubmitting) return;
+    setErrorMsg('');
     setIsSubmitting(true);
-    
+
     const formData = new FormData(e.currentTarget);
     const finalLeaveType = leaveType === 'ลาอื่นๆ' ? `ลาอื่นๆ (${otherLeaveType})` : leaveType;
 
-    const data = {
-      action: 'leave',
-      userId: userId, // ✅ 3. ส่ง userId พ่วงไปด้วยเพื่อให้ชีตตัดวันลาถูกคน
-      empId: empId,
-      name: empName,
-      position: position,
-      department: department,
-      leaveType: finalLeaveType,
-      startDate: formData.get('startDate'),
-      endDate: formData.get('endDate'),
-      reason: formData.get('reason'),
-    };
-
     try {
-      await fetch('/api/balance', {
+      // Send only the request details plus the LINE token. Identity (userId,
+      // employee id, name) is verified and resolved on the server.
+      const idToken = liff.getIDToken();
+      const accessToken = liff.getAccessToken();
+      if (!idToken && !accessToken) {
+        setErrorMsg('ไม่สามารถยืนยันตัวตนได้ กรุณาเปิดหน้านี้จากแอป LINE');
+        setIsSubmitting(false);
+        return;
+      }
+
+      const res = await fetch('/api/leave', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data)
+        body: JSON.stringify({
+          idToken,
+          accessToken,
+          clientRequestId,
+          leaveType: finalLeaveType,
+          startDate: formData.get('startDate'),
+          endDate: formData.get('endDate'),
+          reason: formData.get('reason'),
+        })
       });
-      setShowPopup(true);
-    } catch (err) {
-      alert("ไม่สามารถส่งข้อมูลได้ กรุณาลองใหม่อีกครั้ง");
+
+      const result = await res.json().catch(() => ({}));
+      if (res.ok && result.success) {
+        setShowPopup(true);
+      } else {
+        setErrorMsg(result.message || result.error || 'ไม่สามารถส่งคำขอได้ กรุณาลองใหม่อีกครั้ง');
+      }
+    } catch {
+      setErrorMsg('ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้ กรุณาลองใหม่อีกครั้ง');
     } finally {
       setIsSubmitting(false);
     }
@@ -173,6 +192,12 @@ export default function LeavePage() {
               </div>
             </div>
             
+            {errorMsg && (
+              <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-xl px-4 py-3">
+                {errorMsg}
+              </div>
+            )}
+
             <div className="pt-6">
               <button type="submit" disabled={isSubmitting} className="w-full bg-indigo-600 text-white py-4 rounded-xl font-bold text-lg hover:bg-indigo-700 transition-all shadow-[0_8px_30px_rgb(79,70,229,0.3)] hover:shadow-[0_8px_30px_rgb(79,70,229,0.5)] hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none disabled:shadow-none flex justify-center items-center gap-2">
                 {isSubmitting ? (

@@ -1,31 +1,38 @@
 import { NextResponse } from 'next/server';
+import { callAppsScript } from '@/lib/google-apps-script/client';
 
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
+/**
+ * Read-only balance / profile lookup. Proxies the `getBalance` action to the
+ * Google Apps Script using the server-side URL (never exposed to the browser).
+ *
+ * Only the whitelisted `getBalance` action is forwarded so this cannot be used
+ * as an open proxy to arbitrary Apps Script actions.
+ */
 export async function POST(request: Request) {
+  let body: unknown;
   try {
-    const body = await request.json();
-    
-    // 📌 ลิงก์ Apps Script ของคุณ
-    const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbykGb5NVbqf6oHGBkH_h0arZ9VFaCGvWUDKclK0lx7zSPs4yWgDyqXB6mnJnBVTyDdL4A/exec";
-    
-    const queryParams = new URLSearchParams(body).toString();
-    const targetUrl = `${SCRIPT_URL}?${queryParams}`;
-
-    const res = await fetch(targetUrl, {
-      method: 'GET',
-      redirect: 'follow',
-      cache: 'no-store' // ✅ สำคัญมาก! บังคับไม่ให้ Next.js จำค่าเก่า
-    });
-
-    const text = await res.text();
-    
-    try {
-      return NextResponse.json(JSON.parse(text));
-    } catch (parseError) {
-      console.error("Invalid Response:", text);
-      return NextResponse.json({ status: 'error', message: 'Invalid Google Response' }, { status: 500 });
-    }
-
-  } catch (error: any) {
-    return NextResponse.json({ status: 'error', message: error.message }, { status: 500 });
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ status: 'error', message: 'invalid body' }, { status: 400 });
   }
+  const b = (body ?? {}) as Record<string, unknown>;
+  const userId = typeof b.userId === 'string' ? b.userId : '';
+
+  if (!userId) {
+    return NextResponse.json({ status: 'error', message: 'userId is required' }, { status: 400 });
+  }
+
+  const result = await callAppsScript({ action: 'getBalance', userId });
+  if (!result.ok) {
+    console.error('balance lookup failed:', result.error);
+    return NextResponse.json(
+      { status: 'error', message: 'ไม่สามารถดึงข้อมูลได้ในขณะนี้' },
+      { status: 502 },
+    );
+  }
+
+  return NextResponse.json(result.data);
 }

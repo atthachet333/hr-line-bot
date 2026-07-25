@@ -2,9 +2,10 @@
 
 import { useEffect, useState } from 'react';
 import liff from '@line/liff';
+import { useMounted } from '@/lib/hooks/use-mounted';
 
 export default function CheckOutPage() {
-  const [isMounted, setIsMounted] = useState(false);
+  const isMounted = useMounted();
   const [location, setLocation] = useState<{lat: number, lng: number} | null>(null);
   const [isFetching, setIsFetching] = useState(false);
   const [timeText, setTimeText] = useState("--:--:--");
@@ -13,11 +14,13 @@ export default function CheckOutPage() {
   const [summary, setSummary] = useState('');
   const [showPopup, setShowPopup] = useState(false);
   const [displayName, setDisplayName] = useState("พนักงาน");
-
-  const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbykGb5NVbqf6oHGBkH_h0arZ9VFaCGvWUDKclK0lx7zSPs4yWgDyqXB6mnJnBVTyDdL4A/exec"; // 📌 เปลี่ยนตรงนี้
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
+  const [clientRequestId] = useState(() =>
+    typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
+  );
 
   useEffect(() => {
-    setIsMounted(true);
     const tick = () => {
       const now = new Date();
       setTimeText(now.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
@@ -45,7 +48,7 @@ export default function CheckOutPage() {
     if (typeof window !== 'undefined' && 'geolocation' in navigator) {
       navigator.geolocation.getCurrentPosition(
         (pos) => { setLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude }); setIsFetching(false); },
-        (err) => { alert("กรุณาอนุญาต GPS"); setIsFetching(false); },
+        () => { alert("กรุณาอนุญาต GPS"); setIsFetching(false); },
         { enableHighAccuracy: false, timeout: 10000, maximumAge: 0 }
       );
     }
@@ -55,25 +58,45 @@ export default function CheckOutPage() {
     e.preventDefault();
     if (!location) return alert("กรุณากดดึงพิกัด GPS ก่อนครับ");
     if (!summary.trim()) return alert("กรุณาระบุสรุปงานประจำวันด้วยครับ");
-    
-    const payload = {
-      action: 'checkout',
-      displayName: displayName,
-      time: timeText,
-      lat: location.lat,
-      lng: location.lng,
-      summary: summary
-    };
+    if (isSubmitting) return; // กันกดซ้ำระหว่างส่ง
+
+    setErrorMsg('');
+    setIsSubmitting(true);
 
     try {
-      await fetch(SCRIPT_URL, {
+      const idToken = liff.getIDToken();
+      const accessToken = liff.getAccessToken();
+      if (!idToken && !accessToken) {
+        setErrorMsg('ไม่สามารถยืนยันตัวตนได้ กรุณาเปิดหน้านี้จากแอป LINE');
+        setIsSubmitting(false);
+        return;
+      }
+
+      const res = await fetch('/api/attendance/check-out', {
         method: 'POST',
-        mode: 'no-cors',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        body: JSON.stringify({
+          idToken,
+          accessToken,
+          clientRequestId,
+          time: timeText,
+          lat: location.lat,
+          lng: location.lng,
+          summary,
+        })
       });
-      setShowPopup(true);
-    } catch (err) { alert("ส่งข้อมูลไม่สำเร็จ กรุณาลองใหม่"); }
+
+      const result = await res.json().catch(() => ({}));
+      if (res.ok && result.success) {
+        setShowPopup(true); // โชว์ Popup เมื่อบันทึกจริงสำเร็จเท่านั้น
+      } else {
+        setErrorMsg(result.message || result.error || 'บันทึกเวลาออกงานไม่สำเร็จ กรุณาลองใหม่');
+      }
+    } catch {
+      setErrorMsg('ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้ กรุณาลองใหม่');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const closeLiff = () => liff.isInClient() ? liff.closeWindow() : setShowPopup(false);
@@ -115,7 +138,13 @@ export default function CheckOutPage() {
               <textarea value={summary} onChange={(e) => setSummary(e.target.value)} className="w-full px-4 py-3 bg-white border-2 border-gray-200 rounded-xl focus:outline-none focus:border-gray-900 text-base h-28 resize-none" placeholder="วันนี้ทำอะไรไปบ้าง..." required></textarea>
             </div>
             
-            <button type="submit" className={`w-full py-4 rounded-xl font-bold text-lg transition-colors shadow-lg ${location && summary.trim() ? 'bg-gray-900 text-white hover:bg-black' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`} disabled={!location || !summary.trim()}>ยืนยันออกงาน</button>
+            {errorMsg && (
+              <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-xl px-4 py-3 text-center">
+                {errorMsg}
+              </div>
+            )}
+
+            <button type="submit" className={`w-full py-4 rounded-xl font-bold text-lg transition-colors shadow-lg ${location && summary.trim() && !isSubmitting ? 'bg-gray-900 text-white hover:bg-black' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`} disabled={!location || !summary.trim() || isSubmitting}>{isSubmitting ? 'กำลังบันทึก...' : 'ยืนยันออกงาน'}</button>
           </form>
 
           {showPopup && (

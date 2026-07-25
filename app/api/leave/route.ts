@@ -1,47 +1,187 @@
-import { NextResponse } from 'next/server';
-import { getGoogleSheets } from '@/lib/google';
+import type { NextResponse } from 'next/server';
+import { env } from '@/lib/env';
+import { correlationIdFrom } from '@/lib/utils/correlation';
+import { readJsonBody } from '@/lib/http/guards';
+import { ok, fail } from '@/lib/http/respond';
+import { rateLimit } from '@/lib/rate-limit';
+import { AuthenticationError, ConflictError, RateLimitError } from '@/lib/errors';
+import { logger } from '@/lib/logger';
+import { verifyIdentity } from '@/lib/line/identity';
+import { validateLeaveInput } from '@/lib/validation/leave';
+import { findByLineUserId } from '@/lib/repositories/employee-repository';
+import * as leaveRepo from '@/lib/repositories/leave-request-repository';
+import * as auditLog from '@/lib/repositories/audit-log-repository';
+import { loadHolidays } from '@/lib/repositories/holiday-repository';
+import { computeLeaveDays } from '@/lib/services/leave-calculation-service';
+import { assertSufficientBalance } from '@/lib/services/leave-balance-service';
+import { sendManagerNotification } from '@/lib/services/notification-service';
+import { generateRequestId } from '@/lib/utils/request-id';
+import { nowIso } from '@/lib/utils/datetime';
+import type { LeaveRequest } from '@/lib/domain/leave-request';
 
-export async function POST(req: Request) {
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
+const ROUTE = 'POST /api/leave';
+const RATE_LIMIT = 10; // per user
+const RATE_WINDOW_MS = 60_000;
+
+export async function POST(req: Request): Promise<NextResponse> {
+  const correlationId = correlationIdFrom(req);
+  const startedAt = Date.now();
   try {
-    const body = await req.json();
-    const { empId, name, leaveType, startDate, endDate, reason } = body;
+    const body = await readJsonBody<Record<string, unknown>>(req);
 
-    // --- 1. บันทึกลง Google Sheets (เหมือนเดิม) ---
-    const { googleSheets, spreadsheetId } = await getGoogleSheets();
-    const timestamp = new Date().toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' });
-    const id = `REQ-${Date.now()}`;
-    
-    await googleSheets.spreadsheets.values.append({
-      spreadsheetId: spreadsheetId as string,
-      range: 'LeaveRequests!A:I',
-      valueInputOption: 'USER_ENTERED',
-      requestBody: { values: [[id, timestamp, empId, name, leaveType, startDate, endDate, reason, 'รออนุมัติ']] },
+    // 1. Verify identity from the LINE token (never trust browser identity).
+    const identity = await verifyIdentity({
+      idToken: typeof body.idToken === 'string' ? body.idToken : undefined,
+      accessToken: typeof body.accessToken === 'string' ? body.accessToken : undefined,
+    });
+    if (!identity.ok) {
+      throw new AuthenticationError('ไม่สามารถยืนยันตัวตนได้ กรุณาเปิดจากแอป LINE อีกครั้ง');
+    }
+    const lineUserId = identity.identity.lineUserId;
+
+    // Per-user rate limit (after identity is established).
+    const rl = rateLimit(`leave:${lineUserId}`, RATE_LIMIT, RATE_WINDOW_MS);
+    if (!rl.allowed) {
+      throw new RateLimitError('มีการส่งคำขอบ่อยเกินไป กรุณารอสักครู่');
+    }
+
+    // 2. Validate request details.
+    const validated = validateLeaveInput(body);
+    if (!validated.ok) {
+      const { ValidationError } = await import('@/lib/errors');
+      throw new ValidationError(validated.error);
+    }
+    const input = validated.value;
+
+    // 3. Resolve the employee server-side.
+    const employee = await findByLineUserId(lineUserId);
+    if (!employee) {
+      const { AuthorizationError } = await import('@/lib/errors');
+      throw new AuthorizationError('ไม่พบข้อมูลพนักงานของคุณในระบบ กรุณาติดต่อฝ่ายบุคคล');
+    }
+
+    // 4. Idempotency: (employeeLineUserId + clientRequestId).
+    const existing = await leaveRepo.findByIdempotencyKey(lineUserId, input.clientRequestId);
+    if (existing) {
+      const r = existing.request;
+      const managerNotified = r.managerNotificationStatus === 'SENT';
+      return ok(
+        correlationId,
+        'DUPLICATE_REQUEST',
+        {
+          requestId: r.requestId,
+          status: r.status,
+          managerNotified,
+          retryable: !managerNotified,
+        },
+        { message: 'คำขอนี้ถูกส่งไปแล้ว' },
+      );
+    }
+
+    // 5. Server-side leave-day calculation (never trust client totalDays).
+    const holidays = await loadHolidays();
+    const totalDays = computeLeaveDays(input.startDate, input.endDate, {
+      countWeekends: env.leaveCountWeekends(),
+      holidays,
+    });
+    if (totalDays < 1) {
+      const { BusinessRuleError } = await import('@/lib/errors');
+      throw new BusinessRuleError('VALIDATION_ERROR', 'ช่วงวันที่เลือกไม่มีวันทำงานที่นับเป็นวันลา');
+    }
+
+    // 6. Overlap check against active requests.
+    const overlap = await leaveRepo.findOverlapping(lineUserId, input.startDate, input.endDate);
+    if (overlap) {
+      throw new ConflictError(
+        'มีคำขอลาในช่วงวันที่ดังกล่าวแล้ว',
+        'OVERLAPPING_LEAVE_REQUEST',
+        `overlaps ${overlap.requestId}`,
+      );
+    }
+
+    // 7. Balance check (throws UNKNOWN_LEAVE_TYPE / INSUFFICIENT_LEAVE_BALANCE /
+    //    EXTERNAL_SERVICE_ERROR — never silently approves).
+    await assertSufficientBalance(lineUserId, input.leaveType, totalDays);
+
+    // 8. Persist PENDING.
+    const managerTarget = env.managerGroupId() || env.managerUserIds()[0] || '';
+    const requestId = generateRequestId();
+    const createdAt = nowIso();
+    const record: LeaveRequest = {
+      requestId,
+      clientRequestId: input.clientRequestId,
+      employeeLineUserId: lineUserId,
+      employeeId: employee.employeeId,
+      employeeName: employee.name,
+      position: employee.position,
+      department: employee.department,
+      leaveType: input.leaveType,
+      startDate: input.startDate,
+      endDate: input.endDate,
+      totalDays,
+      reason: input.reason,
+      managerLineUserId: employee.managerLineUserId || managerTarget,
+      status: 'PENDING',
+      approvedBy: '',
+      approvedAt: '',
+      rejectedBy: '',
+      rejectedAt: '',
+      rejectedReason: '',
+      createdAt,
+      updatedAt: createdAt,
+      managerNotificationStatus: 'NOT_STARTED',
+      managerNotificationAttempts: 0,
+      managerNotificationLastAttemptAt: '',
+      managerNotificationError: '',
+      employeeNotificationStatus: 'NOT_STARTED',
+      employeeNotificationAttempts: 0,
+      employeeNotificationLastAttemptAt: '',
+      employeeNotificationError: '',
+    };
+    await leaveRepo.create(record);
+    await auditLog.append({
+      requestId,
+      action: 'CREATE',
+      actorLineUserId: lineUserId,
+      actorName: employee.name,
+      toStatus: 'PENDING',
+      detail: `${input.leaveType} ${input.startDate}..${input.endDate} (${totalDays}d)`,
     });
 
-    // --- 2. ส่งแจ้งเตือนเข้า LINE Group (ส่วนที่เพิ่มเข้ามา) ---
-    // ใช้ Channel Access Token จาก .env.local ของคุณ
-    const message = `🔔 มีคำขอลางานใหม่!\n\n` +
-                    `👤 ชื่อ: ${name} (รหัส: ${empId})\n` +
-                    `📝 ประเภท: ${leaveType}\n` +
-                    `📅 วันที่: ${startDate} ถึง ${endDate}\n` +
-                    `💬 เหตุผล: ${reason}\n\n` +
-                    `คลิกดูรายละเอียดใน Sheet ได้เลยครับ`;
+    // 9. Notify manager and return the REAL result.
+    const notify = await sendManagerNotification(record, correlationId);
+    logger.info('leave_created', {
+      correlationId,
+      route: ROUTE,
+      leaveRequestId: requestId,
+      actorType: 'employee',
+      result: 'ok',
+      durationMs: Date.now() - startedAt,
+    });
 
-    await fetch('https://api.line.me/v2/bot/message/push', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}` // ต้องมีค่านี้นะครับ
+    if (notify.ok) {
+      return ok(
+        correlationId,
+        'LEAVE_REQUEST_CREATED',
+        { requestId, status: 'PENDING', managerNotified: true },
+        { status: 201 },
+      );
+    }
+
+    await auditLog.append({ requestId, action: 'NOTIFY_MANAGER_FAILED', detail: notify.error ?? '' });
+    return ok(
+      correlationId,
+      'LEAVE_REQUEST_CREATED_NOTIFY_FAILED',
+      { requestId, status: 'PENDING', managerNotified: false, retryable: true },
+      {
+        status: 202,
+        message: 'บันทึกคำขอแล้ว แต่แจ้งเตือนหัวหน้าไม่สำเร็จ ระบบจะติดตามให้ภายหลัง',
       },
-      body: JSON.stringify({
-        to: process.env.MANAGER_USER_ID, // ใส่ Group ID หรือ User ID ตรงนี้
-        messages: [{ type: 'text', text: message }]
-      })
-    });
-
-    return NextResponse.json({ success: true });
-    
-  } catch (error: any) {
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+    );
+  } catch (err) {
+    return fail(err, correlationId, { route: ROUTE });
   }
 }
