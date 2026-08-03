@@ -6,6 +6,10 @@ export type LeaveStatus = (typeof LEAVE_STATUS)[number];
 export const NOTIFICATION_STATUS = ['NOT_STARTED', 'PENDING', 'SENT', 'FAILED'] as const;
 export type NotificationStatus = (typeof NOTIFICATION_STATUS)[number];
 
+/** Where an approval / rejection originated from (for audit). */
+export const APPROVAL_SOURCE = ['LINE_MANAGER_BOT', 'HR_ADMIN'] as const;
+export type ApprovalSource = (typeof APPROVAL_SOURCE)[number] | '';
+
 export interface LeaveRequest {
   requestId: string;
   /** Client-supplied idempotency key (dedupes retries of the same submission). */
@@ -22,11 +26,19 @@ export interface LeaveRequest {
   reason: string;
   managerLineUserId: string;
   status: LeaveStatus;
+  /** Display name of the approver (resolved server-side from LINE, never client). */
   approvedBy: string;
+  /** LINE user id of the approver (from event.source.userId, server-verified). */
+  approvedByLineUserId: string;
   approvedAt: string;
+  /** Display name of the actor who rejected (resolved server-side from LINE). */
   rejectedBy: string;
+  /** LINE user id of the rejecter (from event.source.userId, server-verified). */
+  rejectedByLineUserId: string;
   rejectedAt: string;
   rejectedReason: string;
+  /** Origin of the decision, e.g. LINE_MANAGER_BOT | HR_ADMIN. */
+  approvalSource: ApprovalSource;
   createdAt: string;
   updatedAt: string;
 
@@ -59,11 +71,14 @@ export const LEAVE_REQUEST_COLUMNS: (keyof LeaveRequest)[] = [
   'reason',
   'managerLineUserId',
   'status',
+  'approvedByLineUserId',
   'approvedBy',
   'approvedAt',
+  'rejectedByLineUserId',
   'rejectedBy',
   'rejectedAt',
   'rejectedReason',
+  'approvalSource',
   'createdAt',
   'updatedAt',
   'managerNotificationStatus',

@@ -20,10 +20,13 @@ export const transitionDataSchema = z.object({
   previousStatus: z.string().optional(),
   currentStatus: z.string().optional(),
   approvedBy: z.string().optional(),
+  approvedByLineUserId: z.string().optional(),
   approvedAt: z.string().optional(),
   rejectedBy: z.string().optional(),
+  rejectedByLineUserId: z.string().optional(),
   rejectedAt: z.string().optional(),
   rejectedReason: z.string().optional(),
+  approvalSource: z.string().optional(),
 });
 export type TransitionData = z.infer<typeof transitionDataSchema>;
 

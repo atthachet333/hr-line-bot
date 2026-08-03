@@ -1,8 +1,8 @@
 import type { LeaveRequest } from '@/lib/domain/leave-request';
 import { buildManagerFlexMessage } from '@/lib/line/flex-message';
 import { notifyManagers } from '@/lib/line/manager-client';
-import { pushTextToEmployee } from '@/lib/line/employee-client';
-import { approvedEmployeeText, rejectedEmployeeText } from '@/lib/line/notifications';
+import { pushToEmployee, pushTextToEmployee } from '@/lib/line/employee-client';
+import { buildEmployeeResultMessages } from '@/lib/line/employee-result-flex';
 import * as leaveRepo from '@/lib/repositories/leave-request-repository';
 import { logger } from '@/lib/logger';
 import type { LineApiResult } from '@/lib/line/types';
@@ -50,16 +50,22 @@ export async function sendEmployeeNotification(
   request: LeaveRequest,
   correlationId: string,
 ): Promise<LineApiResult> {
-  const text =
-    request.status === 'APPROVED'
-      ? approvedEmployeeText(request)
-      : rejectedEmployeeText(request);
+  const { flex, text } = buildEmployeeResultMessages(request);
 
   await leaveRepo.setEmployeeNotification(request.requestId, {
     status: 'PENDING',
     incrementAttempt: true,
   });
-  const result = await pushTextToEmployee(request.employeeLineUserId, text);
+
+  // Prefer the rich Flex Message; fall back to a full-detail text message if the
+  // Flex delivery fails (e.g. malformed contents / API rejection).
+  let result = await pushToEmployee(request.employeeLineUserId, [flex]);
+  let usedFallback = false;
+  if (!result.ok) {
+    usedFallback = true;
+    result = await pushTextToEmployee(request.employeeLineUserId, text);
+  }
+
   await leaveRepo.setEmployeeNotification(request.requestId, {
     status: result.ok ? 'SENT' : 'FAILED',
     error: result.ok ? '' : (result.error ?? ''),
@@ -69,6 +75,7 @@ export async function sendEmployeeNotification(
     leaveRequestId: request.requestId,
     event: 'notify_employee',
     result: result.ok ? 'ok' : 'error',
+    fallback: usedFallback || undefined,
     code: result.ok ? undefined : String(result.status),
   });
   return result;

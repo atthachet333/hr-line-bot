@@ -177,6 +177,7 @@ async function applyTransition(
 ): Promise<void> {
   const desiredStatus = parsed.action === 'approve' ? 'APPROVED' : 'REJECTED';
   const reason = parsed.action === 'reject_reason' ? rejectReasonLabel(parsed.reasonCode) : undefined;
+  const approvalSource = actorType === 'hr_admin' ? 'HR_ADMIN' : 'LINE_MANAGER_BOT';
 
   const outcome = await atomicTransition({
     requestId: request.requestId,
@@ -184,6 +185,7 @@ async function applyTransition(
     actorLineUserId: actorUserId,
     actorName: managerName,
     reason,
+    approvalSource,
     correlationId,
   });
 
@@ -216,10 +218,13 @@ async function applyTransition(
     ...request,
     status: desiredStatus,
     approvedBy: desiredStatus === 'APPROVED' ? managerName : request.approvedBy,
+    approvedByLineUserId: desiredStatus === 'APPROVED' ? actorUserId : request.approvedByLineUserId,
     approvedAt: desiredStatus === 'APPROVED' ? at : request.approvedAt,
     rejectedBy: desiredStatus === 'REJECTED' ? managerName : request.rejectedBy,
+    rejectedByLineUserId: desiredStatus === 'REJECTED' ? actorUserId : request.rejectedByLineUserId,
     rejectedAt: desiredStatus === 'REJECTED' ? at : request.rejectedAt,
     rejectedReason: desiredStatus === 'REJECTED' ? (reason ?? '') : request.rejectedReason,
+    approvalSource,
   };
 
   await auditLog.append({

@@ -4,7 +4,7 @@ import { ExternalServiceError } from '@/lib/errors';
 import { callAppsScriptEnvelope } from './client';
 import { transitionDataSchema, type TransitionData } from './schema';
 import * as leaveRepo from '@/lib/repositories/leave-request-repository';
-import type { LeaveStatus } from '@/lib/domain/leave-request';
+import type { ApprovalSource, LeaveStatus } from '@/lib/domain/leave-request';
 
 export type TransitionOutcome =
   | { outcome: 'updated'; previousStatus: string; currentStatus: string; data: TransitionData }
@@ -17,6 +17,8 @@ export interface TransitionInput {
   actorLineUserId: string;
   actorName: string;
   reason?: string;
+  /** Origin of the decision (LINE_MANAGER_BOT | HR_ADMIN). */
+  approvalSource: Extract<ApprovalSource, 'LINE_MANAGER_BOT' | 'HR_ADMIN'>;
   correlationId: string;
 }
 
@@ -32,9 +34,24 @@ export interface TransitionInput {
  * best-effort fallback and is NOT race-proof — logged as a warning.
  */
 export async function atomicTransition(input: TransitionInput): Promise<TransitionOutcome> {
-  const { requestId, desiredStatus, actorLineUserId, actorName, reason, correlationId } = input;
+  const { requestId, desiredStatus, actorLineUserId, actorName, reason, approvalSource, correlationId } =
+    input;
 
   if (!env.googleAppsScriptUrl()) {
+    // Production must never fall back to the non-atomic read-check-write path.
+    // Keep the request PENDING and surface SERVICE_UNAVAILABLE to the caller.
+    if (env.isProduction() && !env.allowNonAtomicTransition()) {
+      logger.error('transition_atomic_unavailable', {
+        correlationId,
+        leaveRequestId: requestId,
+        event: 'atomic_transition',
+        detail: 'GOOGLE_APPS_SCRIPT_URL not configured and non-atomic fallback disabled',
+      });
+      throw new ExternalServiceError(
+        'ระบบไม่พร้อมอัปเดตสถานะในขณะนี้ กรุณาลองใหม่ภายหลัง',
+        'atomic transition unavailable (SERVICE_UNAVAILABLE)',
+      );
+    }
     logger.warn('transition_fallback_repository', {
       correlationId,
       leaveRequestId: requestId,
@@ -51,6 +68,7 @@ export async function atomicTransition(input: TransitionInput): Promise<Transiti
     actorLineUserId,
     actorName,
     reason: reason ?? '',
+    approvalSource,
   });
 
   if (!result.ok) {
@@ -104,13 +122,17 @@ async function repositoryFallback(input: TransitionInput): Promise<TransitionOut
       ? {
           status: 'APPROVED' as const,
           approvedBy: input.actorName,
+          approvedByLineUserId: input.actorLineUserId,
           approvedAt: new Date().toISOString(),
+          approvalSource: input.approvalSource,
         }
       : {
           status: 'REJECTED' as const,
           rejectedBy: input.actorName,
+          rejectedByLineUserId: input.actorLineUserId,
           rejectedAt: new Date().toISOString(),
           rejectedReason: input.reason ?? '',
+          approvalSource: input.approvalSource,
         };
 
   const res = await leaveRepo.transitionFromPending(input.requestId, patch);
@@ -124,10 +146,13 @@ async function repositoryFallback(input: TransitionInput): Promise<TransitionOut
         previousStatus: 'PENDING',
         currentStatus: res.request.status,
         approvedBy: res.request.approvedBy,
+        approvedByLineUserId: res.request.approvedByLineUserId,
         approvedAt: res.request.approvedAt,
         rejectedBy: res.request.rejectedBy,
+        rejectedByLineUserId: res.request.rejectedByLineUserId,
         rejectedAt: res.request.rejectedAt,
         rejectedReason: res.request.rejectedReason,
+        approvalSource: res.request.approvalSource,
       },
     };
   }

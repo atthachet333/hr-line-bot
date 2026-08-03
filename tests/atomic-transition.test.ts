@@ -23,6 +23,7 @@ const base = {
   requestId: 'REQ-20260725-ABCD1234',
   actorLineUserId: 'Umgr',
   actorName: 'หัวหน้า',
+  approvalSource: 'LINE_MANAGER_BOT' as const,
   correlationId: 'cid',
 };
 

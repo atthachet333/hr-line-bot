@@ -83,6 +83,14 @@ export const env = {
 
   // ---- Leave rules ----
   leaveCountWeekends: () => optional('LEAVE_COUNT_WEEKENDS', 'false') === 'true',
+
+  // ---- Status transition safety ----
+  /**
+   * Whether the non-atomic read-check-write fallback may be used for status
+   * transitions. Defaults to false. In production this must stay false so that
+   * approvals only ever go through the atomic Apps Script LockService path.
+   */
+  allowNonAtomicTransition: () => optional('ALLOW_NON_ATOMIC_TRANSITION', 'false') === 'true',
 };
 
 /** True when a given manager LINE user id is authorised to approve/reject. */

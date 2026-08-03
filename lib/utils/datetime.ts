@@ -28,6 +28,55 @@ export function formatThaiDateTime(iso: string): string {
   return `${datePart} เวลา ${timePart} น.`;
 }
 
+/**
+ * Format a YYYY-MM-DD date for humans in Thai, e.g. "10 สิงหาคม 2569".
+ * Anchors the date at Bangkok midnight so it never shifts across the UTC
+ * boundary (avoids the `new Date("YYYY-MM-DD")` off-by-one).
+ */
+export function formatThaiDate(ymd: string): string {
+  const date = new Date(`${ymd}T00:00:00+07:00`);
+  if (Number.isNaN(date.getTime())) return ymd;
+  return date.toLocaleDateString('th-TH', {
+    timeZone: BANGKOK_TZ,
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
+}
+
+/** The day-of-month for a YYYY-MM-DD date in Asia/Bangkok. */
+function bangkokDayOfMonth(ymd: string): string {
+  const date = new Date(`${ymd}T00:00:00+07:00`);
+  if (Number.isNaN(date.getTime())) return ymd;
+  return date.toLocaleDateString('th-TH', { timeZone: BANGKOK_TZ, day: 'numeric' });
+}
+
+/**
+ * Format an inclusive date range in Thai. When start and end fall in the same
+ * month and year the range is collapsed, e.g. "10–11 สิงหาคม 2569". Otherwise
+ * both endpoints are shown in full, e.g. "30 สิงหาคม 2569 – 2 กันยายน 2569".
+ */
+export function formatThaiDateRange(startYmd: string, endYmd: string): string {
+  const start = new Date(`${startYmd}T00:00:00+07:00`);
+  const end = new Date(`${endYmd}T00:00:00+07:00`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return `${startYmd} – ${endYmd}`;
+  }
+  if (startYmd === endYmd) return formatThaiDate(startYmd);
+
+  const monthYear = (ymd: string) =>
+    new Date(`${ymd}T00:00:00+07:00`).toLocaleDateString('th-TH', {
+      timeZone: BANGKOK_TZ,
+      month: 'long',
+      year: 'numeric',
+    });
+
+  if (monthYear(startYmd) === monthYear(endYmd)) {
+    return `${bangkokDayOfMonth(startYmd)}–${formatThaiDate(endYmd)}`;
+  }
+  return `${formatThaiDate(startYmd)} – ${formatThaiDate(endYmd)}`;
+}
+
 /** yyyymmdd in Asia/Bangkok, used inside request ids. */
 export function bangkokDateStamp(date = new Date()): string {
   const parts = new Intl.DateTimeFormat('en-CA', {

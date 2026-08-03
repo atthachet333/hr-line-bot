@@ -73,6 +73,8 @@ function transitionLeaveStatus(params) {
   var requestId = params.requestId;
   var desiredStatus = params.desiredStatus; // APPROVED | REJECTED
   var actorName = params.actorName || '';
+  var actorLineUserId = params.actorLineUserId || '';
+  var approvalSource = params.approvalSource || '';
   var reason = params.reason || '';
   if (!requestId || (desiredStatus !== 'APPROVED' && desiredStatus !== 'REJECTED')) {
     return { success: false, code: 'VALIDATION_ERROR', message: 'พารามิเตอร์ไม่ถูกต้อง', data: null };
@@ -101,11 +103,14 @@ function transitionLeaveStatus(params) {
         var rowNumber = r + 1;
         setCell(sheet, rowNumber, map, 'status', desiredStatus);
         setCell(sheet, rowNumber, map, 'updatedAt', nowIso);
+        setCell(sheet, rowNumber, map, 'approvalSource', approvalSource);
         if (desiredStatus === 'APPROVED') {
           setCell(sheet, rowNumber, map, 'approvedBy', actorName);
+          setCell(sheet, rowNumber, map, 'approvedByLineUserId', actorLineUserId);
           setCell(sheet, rowNumber, map, 'approvedAt', nowIso);
         } else {
           setCell(sheet, rowNumber, map, 'rejectedBy', actorName);
+          setCell(sheet, rowNumber, map, 'rejectedByLineUserId', actorLineUserId);
           setCell(sheet, rowNumber, map, 'rejectedAt', nowIso);
           setCell(sheet, rowNumber, map, 'rejectedReason', reason);
         }
@@ -119,10 +124,13 @@ function transitionLeaveStatus(params) {
             previousStatus: 'PENDING',
             currentStatus: desiredStatus,
             approvedBy: desiredStatus === 'APPROVED' ? actorName : '',
+            approvedByLineUserId: desiredStatus === 'APPROVED' ? actorLineUserId : '',
             approvedAt: desiredStatus === 'APPROVED' ? nowIso : '',
             rejectedBy: desiredStatus === 'REJECTED' ? actorName : '',
+            rejectedByLineUserId: desiredStatus === 'REJECTED' ? actorLineUserId : '',
             rejectedAt: desiredStatus === 'REJECTED' ? nowIso : '',
             rejectedReason: desiredStatus === 'REJECTED' ? reason : '',
+            approvalSource: approvalSource,
           },
         };
       }

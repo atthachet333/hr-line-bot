@@ -100,24 +100,12 @@ app/api/
 ### ชีต `LeaveRequests`
 คอลัมน์ (แถวแรกเป็น header — ระบบสร้าง header อัตโนมัติถ้ายังว่าง):
 
-```
-requestId | clientRequestId | employeeLineUserId | employeeId | employeeName |
-position | department | leaveType | startDate | endDate | totalDays | reason |
-managerLineUserId | status | approvedBy | approvedAt | rejectedBy | rejectedAt |
-rejectedReason | createdAt | updatedAt | lineNotificationStatus | lineNotificationError
-```
-
-ตัวอย่างข้อมูลหนึ่งแถว (สมมติ):
-
-```
-REQ-20260725-A1B2C3D4 | 4c2f...-uuid | Uabc123... | EMP001 | สมชาย ใจดี |
-Developer | IT | ลาป่วย | 2026-07-25 | 2026-07-26 | 2 | เป็นไข้ |
-Umanager1... | APPROVED | คุณหัวหน้า | 2026-07-25T03:30:00.000Z |  |  |
- | 2026-07-25T02:00:00.000Z | 2026-07-25T03:30:00.000Z | EMPLOYEE_NOTIFIED |
-```
+คอลัมน์เต็ม (canonical) ดูที่หัวข้อ **Google Sheets schema (updated)** ด้านล่าง
+ซึ่งรวมคอลัมน์ผู้อนุมัติ (`approvedByLineUserId`, `rejectedByLineUserId`,
+`approvalSource`) และคอลัมน์ติดตามการแจ้งเตือน manager/employee.
 
 สถานะที่รองรับ: `PENDING` · `APPROVED` · `REJECTED` · `CANCELLED`
-เวลาเก็บเป็น ISO 8601 (UTC) และแสดงผลเป็น `Asia/Bangkok`
+เวลาเก็บเป็น ISO 8601 (UTC) และแสดงผลเป็น `Asia/Bangkok` (ปี พ.ศ.)
 
 ### ชีต `Employees` (ใช้ resolve ตัวตน — ค้นด้วยชื่อคอลัมน์ ไม่อิงลำดับ)
 
@@ -270,21 +258,91 @@ request id, และ transition ของ leave request (อนุมัติ 
 ```
 requestId | clientRequestId | employeeLineUserId | employeeId | employeeName |
 position | department | leaveType | startDate | endDate | totalDays | reason |
-managerLineUserId | status | approvedBy | approvedAt | rejectedBy | rejectedAt |
-rejectedReason | createdAt | updatedAt |
+managerLineUserId | status |
+approvedByLineUserId | approvedBy | approvedAt |
+rejectedByLineUserId | rejectedBy | rejectedAt | rejectedReason |
+approvalSource | createdAt | updatedAt |
 managerNotificationStatus | managerNotificationAttempts | managerNotificationLastAttemptAt | managerNotificationError |
 employeeNotificationStatus | employeeNotificationAttempts | employeeNotificationLastAttemptAt | employeeNotificationError
 ```
+
+`approvedBy` / `rejectedBy` เก็บ **display name** ของผู้ดำเนินการ (server ดึงจาก LINE
+Profile API — ไม่เชื่อค่าจาก client/postback), ส่วน `approvedByLineUserId` /
+`rejectedByLineUserId` เก็บ **LINE user id** (`event.source.userId`). `approvalSource`
+เก็บที่มาของการตัดสิน เช่น `LINE_MANAGER_BOT` หรือ `HR_ADMIN`.
 
 `Holidays` (optional): header `date` (YYYY-MM-DD).
 `Employees` / `AuditLog`: as documented above.
 
 ### Migration for existing sheets
 Writes are **header-driven** (matched by column name, not position), so you can
-add the new notification columns to the end of an existing `LeaveRequests` header
-without breaking older rows. Columns that are absent simply are not written —
-run `npm run validate:sheets` to see exactly which columns are missing, then add
-them manually (the app never overwrites a non-empty header automatically).
+add new columns to an existing `LeaveRequests` header without breaking older rows.
+Columns that are absent simply are not written — run `npm run validate:sheets` to
+see exactly which columns are missing, then add them manually (the app never
+overwrites a non-empty header automatically).
+
+**Columns added in this revision** — append these to the `LeaveRequests` header
+row (any position; matching is by name) so approver identity is captured:
+
+```
+approvedByLineUserId | rejectedByLineUserId | approvalSource
+```
+
+Existing rows keep working with these cells left blank; only decisions taken
+after the migration populate them.
+
+## Employee notification format
+หลังผู้บริหารกดอนุมัติ/ไม่อนุมัติ Employee Bot จะส่ง **Flex Message** (โทนเขียว =
+อนุมัติ, โทนแดง = ไม่อนุมัติ) พร้อม `altText` ที่อ่านเข้าใจได้ และมี **text fallback**
+รายละเอียดครบเมื่อ Flex ส่งไม่สำเร็จ. ตัวอย่าง (ข้อมูลสมมติ):
+
+อนุมัติ:
+
+```
+✅ คำขอลาได้รับการอนุมัติแล้ว
+
+เลขคำขอ: REQ-20260803-A1B2C3D4
+ชื่อพนักงาน: นายสมชาย ใจดี
+รหัสพนักงาน: EMP001
+ตำแหน่ง: เจ้าหน้าที่บัญชี
+แผนก: Accounting
+
+ประเภทการลา: ลาป่วย
+วันที่เริ่มลา: 10 สิงหาคม 2569
+วันที่สิ้นสุด: 11 สิงหาคม 2569
+จำนวนวันลา: 2 วัน
+
+เหตุผล:
+มีอาการไข้และต้องเข้าพบแพทย์
+
+อนุมัติโดย: คุณวิชัย
+วันที่อนุมัติ: 3 สิงหาคม 2569 เวลา 10:30 น.
+
+สถานะ: อนุมัติเรียบร้อย
+```
+
+ไม่อนุมัติ:
+
+```
+❌ คำขอลาไม่ได้รับการอนุมัติ
+
+เลขคำขอ: REQ-20260803-A1B2C3D4
+ชื่อพนักงาน: นายสมชาย ใจดี
+รหัสพนักงาน: EMP001
+แผนก: Accounting
+
+ประเภทการลา: ลาป่วย
+วันที่: 10–11 สิงหาคม 2569
+จำนวนวันลา: 2 วัน
+
+เหตุผลที่ไม่อนุมัติ:
+มีงานสำคัญในช่วงดังกล่าว
+
+ดำเนินการโดย: คุณวิชัย
+วันที่ดำเนินการ: 3 สิงหาคม 2569 เวลา 10:30 น.
+
+สถานะ: ไม่อนุมัติ
+```
 
 ## Apps Script deployment
 1. Open the Google Sheet → Extensions → Apps Script.

@@ -24,7 +24,11 @@ try {
     .filter(Boolean)
     .filter((f) => /\.(ts|tsx|js|mjs|cjs|json)$/.test(f))
     .filter((f) => !f.endsWith('package-lock.json'))
-    .filter((f) => !f.startsWith('scripts/security-check'));
+    .filter((f) => !f.startsWith('scripts/security-check'))
+    // Test fixtures deliberately contain obviously-fake placeholder keys/tokens
+    // (e.g. "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----"); they
+    // are never deployed. Exclude the test tree from the shipped-source secret scan.
+    .filter((f) => !f.startsWith('tests/'));
 } catch {
   console.error('Not a git repository or git unavailable; scanning src/lib/app dirs.');
 }
