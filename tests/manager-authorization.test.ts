@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
-  isAuthorisedManagerForRequest,
+  authorizeApprover,
+  evaluateSource,
   isAllowedSource,
+  isConfiguredManager,
   isHRAdmin,
 } from '@/lib/authz/manager-authorization';
 
@@ -25,32 +27,43 @@ afterEach(() => {
   for (const k of Object.keys(saved)) delete saved[k];
 });
 
-describe('isAuthorisedManagerForRequest', () => {
-  it('allows the assigned manager', () => {
-    const r = isAuthorisedManagerForRequest('Umgr1', { managerLineUserId: 'Umgr1' });
-    expect(r).toEqual({ ok: true, actorType: 'manager' });
+describe('authorizeApprover (union of MANAGER_USER_IDS ∪ HR_ADMIN_USER_IDS)', () => {
+  it('allows any configured manager as actorType=manager', () => {
+    expect(authorizeApprover('Umgr1')).toEqual({ ok: true, actorType: 'manager' });
+    expect(authorizeApprover('Umgr2')).toEqual({ ok: true, actorType: 'manager' });
   });
 
-  it('denies a different manager', () => {
-    const r = isAuthorisedManagerForRequest('Umgr2', { managerLineUserId: 'Umgr1' });
+  it('allows any HR admin as actorType=hr_admin', () => {
+    expect(authorizeApprover('Uhr1')).toEqual({ ok: true, actorType: 'hr_admin' });
+    expect(authorizeApprover('Uhr2')).toEqual({ ok: true, actorType: 'hr_admin' });
+  });
+
+  it('denies a user in neither list', () => {
+    const r = authorizeApprover('Uother');
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.reason).toBe('not_your_request');
+    if (!r.ok) expect(r.reason).toBe('not_approver');
   });
 
-  it('allows an HR admin to override any request', () => {
-    const r = isAuthorisedManagerForRequest('Uhr1', { managerLineUserId: 'Umgr1' });
-    expect(r).toEqual({ ok: true, actorType: 'hr_admin' });
+  it('denies an empty user id', () => {
+    expect(authorizeApprover('').ok).toBe(false);
   });
 
-  it('denies a normal manager when there is no manager mapping', () => {
-    const r = isAuthorisedManagerForRequest('Umgr1', { managerLineUserId: '' });
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.reason).toBe('no_manager_mapping');
+  it('does NOT depend on the request being assigned to the user (the old bug)', () => {
+    // A manager whose id never equals request.managerLineUserId (a group id) is
+    // still authorised now.
+    expect(authorizeApprover('Umgr1').ok).toBe(true);
   });
 
-  it('allows HR admin even without manager mapping', () => {
-    const r = isAuthorisedManagerForRequest('Uhr2', { managerLineUserId: '' });
-    expect(r.ok).toBe(true);
+  it('handles comma+space separated env with dedupe', () => {
+    set('MANAGER_USER_IDS', 'Umgr1, Umgr1 ,Umgr3');
+    expect(isConfiguredManager('Umgr3')).toBe(true);
+    expect(authorizeApprover('Umgr3').ok).toBe(true);
+  });
+
+  it('strips surrounding quotes from env values', () => {
+    set('MANAGER_USER_IDS', '"Umgr9","Umgr8"');
+    expect(isConfiguredManager('Umgr9')).toBe(true);
+    expect(isConfiguredManager('Umgr8')).toBe(true);
   });
 
   it('isHRAdmin reflects the env list', () => {
@@ -59,17 +72,21 @@ describe('isAuthorisedManagerForRequest', () => {
   });
 });
 
-describe('isAllowedSource', () => {
-  it('accepts the configured group', () => {
+describe('evaluateSource / isAllowedSource', () => {
+  it('accepts the configured group (groupMatch=true)', () => {
+    const s = evaluateSource({ type: 'group', groupId: 'Cgroup1' });
+    expect(s).toEqual({ allowed: true, groupMatch: true, sourceType: 'group' });
     expect(isAllowedSource({ type: 'group', groupId: 'Cgroup1' })).toBe(true);
   });
-  it('rejects a wrong group', () => {
-    expect(isAllowedSource({ type: 'group', groupId: 'Cother' })).toBe(false);
+  it('rejects a wrong group (groupMatch=false)', () => {
+    const s = evaluateSource({ type: 'group', groupId: 'Cother' });
+    expect(s.allowed).toBe(false);
+    expect(s.groupMatch).toBe(false);
   });
   it('accepts a direct message', () => {
-    expect(isAllowedSource({ type: 'user' })).toBe(true);
+    expect(evaluateSource({ type: 'user' }).allowed).toBe(true);
   });
   it('rejects a room', () => {
-    expect(isAllowedSource({ type: 'room' })).toBe(false);
+    expect(evaluateSource({ type: 'room' }).allowed).toBe(false);
   });
 });

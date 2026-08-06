@@ -36,6 +36,10 @@ function specs(): SheetSpec[] {
       requiredSheet: true,
     },
     { name: env.sheetNames.holidays(), required: ['date'], requiredSheet: false },
+    // Balances is optional and its column names vary (EmpID / LineUserID /
+    // SickLeave / …); the repository matches them case-insensitively, so we only
+    // check that the tab exists and has no duplicate headers.
+    { name: env.sheetNames.balances(), required: [], requiredSheet: false },
   ];
 }
 

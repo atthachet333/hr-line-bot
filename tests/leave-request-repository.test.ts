@@ -84,6 +84,14 @@ function sampleRequest(requestId: string): LeaveRequest {
   };
 }
 
+/** Serialise a request into a sheet row aligned to the canonical header order. */
+function toStringRow(req: LeaveRequest): string[] {
+  return (LEAVE_REQUEST_COLUMNS as string[]).map((col) => {
+    const v = (req as unknown as Record<string, unknown>)[col];
+    return v === undefined || v === null ? '' : String(v);
+  });
+}
+
 describe('leave request repository', () => {
   beforeEach(() => {
     store.length = 0;
@@ -149,5 +157,50 @@ describe('leave request repository', () => {
     });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe('not_found');
+  });
+
+  describe('listForEmployee', () => {
+    it('returns only the employee’s own requests, newest first', async () => {
+      const a1 = { ...sampleRequest('REQ-20260801-AAAA0001'), employeeLineUserId: 'U-A', createdAt: '2026-08-01T00:00:00.000Z' };
+      const a2 = { ...sampleRequest('REQ-20260803-AAAA0002'), employeeLineUserId: 'U-A', createdAt: '2026-08-03T00:00:00.000Z' };
+      const b1 = { ...sampleRequest('REQ-20260802-BBBB0001'), employeeLineUserId: 'U-B', employeeId: 'EMP999', createdAt: '2026-08-02T00:00:00.000Z' };
+      await repo.create(a1);
+      await repo.create(b1);
+      await repo.create(a2);
+
+      const list = await repo.listForEmployee('U-A', 'EMP001');
+      expect(list.map((r) => r.requestId)).toEqual(['REQ-20260803-AAAA0002', 'REQ-20260801-AAAA0001']);
+      // Employee A never sees B's request.
+      expect(list.some((r) => r.employeeLineUserId === 'U-B')).toBe(false);
+    });
+
+    it('matches legacy rows by employeeId only when the row has no LINE id', async () => {
+      const legacy = { ...sampleRequest('REQ-20260701-LEGA0001'), employeeLineUserId: '', employeeId: 'EMP001' };
+      const otherLegacy = { ...sampleRequest('REQ-20260701-LEGA0002'), employeeLineUserId: '', employeeId: 'EMP002' };
+      await repo.create(legacy);
+      await repo.create(otherLegacy);
+
+      const list = await repo.listForEmployee('U-A', 'EMP001');
+      expect(list.map((r) => r.requestId)).toEqual(['REQ-20260701-LEGA0001']);
+    });
+
+    it('returns [] when the employee has no requests', async () => {
+      await repo.create({ ...sampleRequest('REQ-20260801-OTHER001'), employeeLineUserId: 'U-someone-else' });
+      const list = await repo.listForEmployee('U-nobody', 'EMP-nobody');
+      expect(list).toEqual([]);
+    });
+
+    it('normalises a startDate that Sheets stored as a serial number', async () => {
+      // Simulate a legacy row where "2021-01-01" was coerced to serial 44197.
+      const startIdx = (LEAVE_REQUEST_COLUMNS as string[]).indexOf('startDate');
+      const row = toStringRow({ ...sampleRequest('REQ-20210101-SERIAL01'), employeeLineUserId: 'U-serial' });
+      row[startIdx] = '44197';
+      store.push(row);
+
+      const list = await repo.listForEmployee('U-serial', 'EMP001');
+      expect(list[0].startDate).toBe('2021-01-01');
+      // A proper YMD endDate is preserved.
+      expect(list[0].endDate).toBe('2026-07-26');
+    });
   });
 });

@@ -161,8 +161,13 @@ function getBalance(params) {
   var userId = params.userId;
   if (!userId) return { success: false, code: 'VALIDATION_ERROR', message: 'userId is required', data: null };
   // TODO: look up the employee + balances by userId in your Employees sheet.
-  // Returning a not-found contract by default so nothing is faked.
-  return { success: false, code: 'EMPLOYEE_NOT_FOUND', message: 'ไม่พบข้อมูลพนักงาน', data: null };
+  // Until a real remaining-leave table exists, report NOT_IMPLEMENTED — do NOT
+  // fake data and do NOT return EMPLOYEE_NOT_FOUND (which would falsely imply the
+  // employee does not exist when the function is simply not built yet). The
+  // Next.js side treats this as a non-fatal, best-effort skip for leave
+  // submission. (It still accepts the legacy EMPLOYEE_NOT_FOUND for backward
+  // compatibility with older deployments.)
+  return { success: false, code: 'NOT_IMPLEMENTED', message: 'Leave balance lookup is not configured', data: null };
 }
 
 /**

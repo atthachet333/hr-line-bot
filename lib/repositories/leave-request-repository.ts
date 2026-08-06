@@ -6,7 +6,7 @@ import {
   type LeaveStatus,
   type NotificationStatus,
 } from '@/lib/domain/leave-request';
-import { nowIso } from '@/lib/utils/datetime';
+import { nowIso, sheetDateToYmd } from '@/lib/utils/datetime';
 import { columnLetter, getSheetsClient } from '@/lib/sheets/client';
 
 function sheetName(): string {
@@ -61,6 +61,9 @@ function toRow(req: LeaveRequest, header: string[]): (string | number)[] {
   });
 }
 
+/** Calendar-date columns that must be normalised to YYYY-MM-DD on read. */
+const DATE_FIELDS = new Set<string>(['startDate', 'endDate']);
+
 /** Convert a sheet row (with header map) into a domain record. */
 function fromRow(row: string[], headerIndex: Map<string, number>): LeaveRequest {
   const record = defaultRecord();
@@ -70,6 +73,10 @@ function fromRow(row: string[], headerIndex: Map<string, number>): LeaveRequest 
     const raw = row[idx] ?? '';
     if (NUMERIC.has(col)) {
       (record[col] as number) = Number(raw) || 0;
+    } else if (DATE_FIELDS.has(col)) {
+      // Repair values Sheets coerced into a serial number (e.g. "46787") back to
+      // a clean YYYY-MM-DD so every consumer formats the correct calendar date.
+      (record[col] as string) = sheetDateToYmd(raw);
     } else {
       (record[col] as string) = String(raw);
     }
@@ -167,6 +174,38 @@ export async function findOverlapping(
   return null;
 }
 
+/**
+ * List all leave requests belonging to a verified employee, most-recent first.
+ *
+ * The primary key is `employeeLineUserId` (the server-verified LINE user id).
+ * `employeeId` is used ONLY as a fallback for legacy rows that were written
+ * before the LINE id was captured — and only when the row's `employeeLineUserId`
+ * is blank AND its `employeeId` matches the already-verified employee. Identity
+ * is never taken from the request; callers pass values resolved from the token +
+ * Employees sheet.
+ */
+export async function listForEmployee(
+  employeeLineUserId: string,
+  employeeId: string,
+): Promise<LeaveRequest[]> {
+  const { rows, headerIndex } = await readAll();
+  const items: LeaveRequest[] = [];
+  for (const row of rows) {
+    const r = fromRow(row, headerIndex);
+    const matchByLine = !!employeeLineUserId && r.employeeLineUserId === employeeLineUserId;
+    const matchByLegacyId = !r.employeeLineUserId && !!employeeId && r.employeeId === employeeId;
+    if (matchByLine || matchByLegacyId) items.push(r);
+  }
+  // Newest first by createdAt (ISO 8601 sorts lexicographically). Fall back to
+  // updatedAt when createdAt is missing on older rows.
+  items.sort((a, b) => {
+    const ka = a.createdAt || a.updatedAt;
+    const kb = b.createdAt || b.updatedAt;
+    return ka < kb ? 1 : ka > kb ? -1 : 0;
+  });
+  return items;
+}
+
 /** Append a new leave request row. */
 export async function create(req: LeaveRequest): Promise<void> {
   const { header } = await ensureHeaders();
@@ -174,7 +213,9 @@ export async function create(req: LeaveRequest): Promise<void> {
   await sheets.spreadsheets.values.append({
     spreadsheetId,
     range: `${sheetName()}!A:ZZ`,
-    valueInputOption: 'USER_ENTERED',
+    // RAW (not USER_ENTERED): keep "2026-08-06" as literal text so Sheets never
+    // coerces dates into serial numbers (the "1 มกราคม 46787" bug).
+    valueInputOption: 'RAW',
     insertDataOption: 'INSERT_ROWS',
     requestBody: { values: [toRow(req, header)] },
   });
@@ -187,7 +228,8 @@ async function writeRow(rowNumber: number, req: LeaveRequest, header: string[]):
   await sheets.spreadsheets.values.update({
     spreadsheetId,
     range: `${sheetName()}!A${rowNumber}:${lastCol}${rowNumber}`,
-    valueInputOption: 'USER_ENTERED',
+    // RAW so dates stay literal text (never coerced to serial numbers).
+    valueInputOption: 'RAW',
     requestBody: { values: [toRow(req, header)] },
   });
 }

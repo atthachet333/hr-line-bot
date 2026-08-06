@@ -1,6 +1,7 @@
 import type { NextResponse } from 'next/server';
 import { env } from '@/lib/env';
 import { correlationIdFrom } from '@/lib/utils/correlation';
+import { maskId } from '@/lib/utils/mask';
 import { readJsonBody } from '@/lib/http/guards';
 import { ok, fail } from '@/lib/http/respond';
 import { rateLimit } from '@/lib/rate-limit';
@@ -56,11 +57,22 @@ export async function POST(req: Request): Promise<NextResponse> {
     }
     const input = validated.value;
 
-    // 3. Resolve the employee server-side.
+    // 3. Resolve the employee server-side (identity from the Employees sheet only).
     const employee = await findByLineUserId(lineUserId);
     if (!employee) {
-      const { AuthorizationError } = await import('@/lib/errors');
-      throw new AuthorizationError('ไม่พบข้อมูลพนักงานของคุณในระบบ กรุณาติดต่อฝ่ายบุคคล');
+      logger.warn('leave_employee_not_linked', {
+        route: ROUTE,
+        correlationId,
+        code: 'EMPLOYEE_NOT_LINKED',
+        verifiedLineUserIdMasked: maskId(lineUserId),
+        employeeLookupResult: 'not_found',
+      });
+      const { BusinessRuleError } = await import('@/lib/errors');
+      throw new BusinessRuleError(
+        'EMPLOYEE_NOT_LINKED',
+        'บัญชี LINE นี้ยังไม่ได้เชื่อมกับข้อมูลพนักงาน กรุณาผูกบัญชีก่อนส่งคำขอลา',
+        403,
+      );
     }
 
     // 4. Idempotency: (employeeLineUserId + clientRequestId).
@@ -102,9 +114,21 @@ export async function POST(req: Request): Promise<NextResponse> {
       );
     }
 
-    // 7. Balance check (throws UNKNOWN_LEAVE_TYPE / INSUFFICIENT_LEAVE_BALANCE /
-    //    EXTERNAL_SERVICE_ERROR — never silently approves).
-    await assertSufficientBalance(lineUserId, input.leaveType, totalDays);
+    // 7. Balance check. Best-effort: an unknown leave type or a genuinely
+    //    insufficient balance is rejected, but a balance source that is
+    //    unavailable / not yet implemented must NOT block the request — it is
+    //    logged as a warning + audit entry and the request proceeds.
+    const balance = await assertSufficientBalance(lineUserId, input.leaveType, totalDays);
+    if (balance.checked === false && balance.skipped) {
+      logger.warn('leave_balance_check_skipped', {
+        correlationId,
+        route: ROUTE,
+        actorType: 'employee',
+        result: 'skipped',
+        code: balance.skipReason,
+        detail: `bucket=${balance.bucket} type=${input.leaveType}`,
+      });
+    }
 
     // 8. Persist PENDING.
     const managerTarget = env.managerGroupId() || env.managerUserIds()[0] || '';
@@ -153,6 +177,16 @@ export async function POST(req: Request): Promise<NextResponse> {
       toStatus: 'PENDING',
       detail: `${input.leaveType} ${input.startDate}..${input.endDate} (${totalDays}d)`,
     });
+    if (balance.checked === false && balance.skipped) {
+      await auditLog.append({
+        requestId,
+        action: 'LEAVE_BALANCE_CHECK_SKIPPED',
+        actorLineUserId: lineUserId,
+        actorName: employee.name,
+        detail: `reason=${balance.skipReason} bucket=${balance.bucket}`,
+      });
+    }
+    const balanceWarning = balance.checked === false && balance.skipped;
 
     // 9. Notify manager and return the REAL result.
     const notify = await sendManagerNotification(record, correlationId);
@@ -169,7 +203,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       return ok(
         correlationId,
         'LEAVE_REQUEST_CREATED',
-        { requestId, status: 'PENDING', managerNotified: true },
+        { requestId, status: 'PENDING', managerNotified: true, balanceChecked: !balanceWarning },
         { status: 201 },
       );
     }
@@ -178,7 +212,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     return ok(
       correlationId,
       'LEAVE_REQUEST_CREATED_NOTIFY_FAILED',
-      { requestId, status: 'PENDING', managerNotified: false, retryable: true },
+      { requestId, status: 'PENDING', managerNotified: false, retryable: true, balanceChecked: !balanceWarning },
       {
         status: 202,
         message: 'บันทึกคำขอแล้ว แต่แจ้งเตือนหัวหน้าไม่สำเร็จ ระบบจะติดตามให้ภายหลัง',

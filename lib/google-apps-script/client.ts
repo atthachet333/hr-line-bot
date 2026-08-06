@@ -1,15 +1,30 @@
 import { env } from '@/lib/env';
 import { appsScriptEnvelopeSchema, type AppsScriptEnvelope } from './schema';
 
+/** Default request timeout. Actions may override via `opts.timeoutMs`. */
 const TIMEOUT_MS = 15_000;
+
+export interface AppsScriptCallOptions {
+  /**
+   * Per-call timeout. Use a shorter value for best-effort, non-blocking actions
+   * (e.g. getBalance) so a slow Apps Script never stalls the request that
+   * depends on it. Required/atomic actions (transitionLeaveStatus) keep the
+   * longer default.
+   */
+  timeoutMs?: number;
+}
 
 export type AppsScriptResult<T = unknown> =
   | { ok: true; data: T }
   | { ok: false; error: string; status: number };
 
-async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(url, { ...init, signal: controller.signal });
   } finally {
@@ -26,6 +41,7 @@ async function fetchWithTimeout(url: string, init: RequestInit): Promise<Respons
  */
 export async function callAppsScript<T = unknown>(
   payload: Record<string, string | number | boolean | undefined>,
+  opts: AppsScriptCallOptions = {},
 ): Promise<AppsScriptResult<T>> {
   const baseUrl = env.googleAppsScriptUrl();
   if (!baseUrl) {
@@ -40,7 +56,11 @@ export async function callAppsScript<T = unknown>(
 
   let res: Response;
   try {
-    res = await fetchWithTimeout(url, { method: 'GET', redirect: 'follow', cache: 'no-store' });
+    res = await fetchWithTimeout(
+      url,
+      { method: 'GET', redirect: 'follow', cache: 'no-store' },
+      opts.timeoutMs ?? TIMEOUT_MS,
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { ok: false, error: `Apps Script request failed: ${message}`, status: 0 };
@@ -91,8 +111,9 @@ export type EnvelopeResult =
  */
 export async function callAppsScriptEnvelope(
   payload: Record<string, string | number | boolean | undefined>,
+  opts: AppsScriptCallOptions = {},
 ): Promise<EnvelopeResult> {
-  const raw = await callAppsScript<unknown>(payload);
+  const raw = await callAppsScript<unknown>(payload, opts);
   if (!raw.ok) {
     const kind = raw.status === 0
       ? (raw.error.includes('not configured') ? 'not_configured' : 'transport')

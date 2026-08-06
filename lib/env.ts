@@ -20,14 +20,18 @@ function optional(name: string, fallback = ''): string {
   return value && value.trim() !== '' ? value : fallback;
 }
 
-/** Parse a comma / newline separated list into a trimmed, de-duplicated array. */
+/**
+ * Parse a comma / newline separated list into a trimmed, de-duplicated array.
+ * Also strips a single pair of surrounding quotes from each item so a value like
+ * `"Uaaa, Ubbb"` (quoted in the .env file) never leaves quotes glued to an id.
+ */
 export function parseList(raw: string | undefined): string[] {
   if (!raw) return [];
   return Array.from(
     new Set(
       raw
         .split(/[\n,]/)
-        .map((s) => s.trim())
+        .map((s) => s.trim().replace(/^["']|["']$/g, '').trim())
         .filter((s) => s.length > 0),
     ),
   );
@@ -79,10 +83,18 @@ export const env = {
     employees: () => optional('SHEET_EMPLOYEES', 'Employees'),
     auditLog: () => optional('SHEET_AUDIT_LOG', 'AuditLog'),
     holidays: () => optional('SHEET_HOLIDAYS', 'Holidays'),
+    balances: () => optional('SHEET_BALANCES', 'Balances'),
   },
 
   // ---- Leave rules ----
   leaveCountWeekends: () => optional('LEAVE_COUNT_WEEKENDS', 'false') === 'true',
+
+  /**
+   * Enables the manager-bot `whoami` helper (direct chat only) so an approver can
+   * discover their LINE user id for MANAGER_USER_IDS / HR_ADMIN_USER_IDS. Turn off
+   * again once the ids are configured. Defaults to false.
+   */
+  enableLineWhoami: () => optional('ENABLE_LINE_WHOAMI', 'false') === 'true',
 
   // ---- Status transition safety ----
   /**
@@ -207,6 +219,25 @@ export function validateEnvironment(
     (requireSecrets ? errors : warnings).push(
       'ต้องตั้งค่า MANAGER_GROUP_ID หรือ MANAGER_USER_IDS อย่างน้อยหนึ่งอย่าง',
     );
+  }
+
+  // Approver identity: at least one manager user id, and every approver id must
+  // look like a LINE user id (starts with "U"). Never echo the ids themselves.
+  const managerIds = parseList(process.env.MANAGER_USER_IDS);
+  const hrAdminIds = parseList(process.env.HR_ADMIN_USER_IDS);
+  if (managerIds.length < 1) {
+    (requireSecrets ? errors : warnings).push(
+      'ต้องตั้งค่า MANAGER_USER_IDS อย่างน้อย 1 รายเพื่อระบุผู้อนุมัติ',
+    );
+  }
+  const isLineUserId = (id: string) => /^U/.test(id);
+  const badManager = managerIds.filter((id) => !isLineUserId(id)).length;
+  if (badManager > 0) {
+    errors.push(`MANAGER_USER_IDS มี ${badManager} ค่าที่ไม่ใช่ LINE userId (ต้องขึ้นต้นด้วย U)`);
+  }
+  const badHrAdmin = hrAdminIds.filter((id) => !isLineUserId(id)).length;
+  if (badHrAdmin > 0) {
+    errors.push(`HR_ADMIN_USER_IDS มี ${badHrAdmin} ค่าที่ไม่ใช่ LINE userId (ต้องขึ้นต้นด้วย U)`);
   }
 
   // Public LIFF ids must not be reused as a secret.

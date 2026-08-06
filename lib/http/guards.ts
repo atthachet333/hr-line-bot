@@ -38,6 +38,14 @@ export async function readJsonBody<T = unknown>(
   }
 }
 
+/** Extract the LIFF access token from an `Authorization: Bearer <token>` header. */
+export function bearerToken(req: Request): string | undefined {
+  const header = req.headers.get('authorization') ?? '';
+  const match = /^Bearer\s+(.+)$/i.exec(header.trim());
+  const token = match?.[1]?.trim();
+  return token && token.length > 0 ? token : undefined;
+}
+
 /** Read a raw body with a size cap (used by the webhook, which needs the raw text). */
 export async function readRawBody(req: Request, maxBytes = 64 * 1024): Promise<string> {
   const declaredLength = Number(req.headers.get('content-length') ?? '');

@@ -35,6 +35,7 @@ export interface LineGenericEvent {
   webhookEventId?: string;
   replyToken?: string;
   source?: LineSource;
+  message?: { type: string; id?: string; text?: string };
   timestamp?: number;
 }
 

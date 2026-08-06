@@ -11,6 +11,7 @@
     "test": "vitest run",
     "validate:env": "tsx scripts/validate-env.ts",
     "validate:sheets": "tsx scripts/validate-sheets.ts",
+    "employee:unlink": "tsx scripts/unlink-employee.ts",
     "security:check": "node scripts/security-check.mjs",
     "verify:production": "npm run validate:env && npm run lint && npm run typecheck && npm run test && npm run build && npm run security:check"
   },
@@ -19,6 +20,7 @@
     "@line/liff": "^2.29.1",
     "googleapis": "^173.0.0",
     "next": "16.2.10",
+    "node-cron": "^4.6.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "zod": "^3.25.76"
