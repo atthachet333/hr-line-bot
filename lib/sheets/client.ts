@@ -1,4 +1,8 @@
-import { google, type sheets_v4 } from 'googleapis';
+// Import ONLY the Sheets API surface, not the ~200MB monolithic `googleapis`
+// barrel, so `tsc` / `next build` do not load every Google API's types (OOM on
+// low-RAM hosts). `auth`/`sheets` come from the same googleapis version as
+// before, so behaviour is unchanged.
+import { sheets as sheetsApi, auth as googleAuth, type sheets_v4 } from 'googleapis/build/src/apis/sheets';
 import { env } from '@/lib/env';
 
 let cached: { sheets: sheets_v4.Sheets; spreadsheetId: string } | null = null;
@@ -19,7 +23,7 @@ export async function getSheetsClient(): Promise<{
   }
 
   const privateKey = process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n');
-  const auth = new google.auth.GoogleAuth({
+  const auth = new googleAuth.GoogleAuth({
     credentials: {
       client_email: process.env.GOOGLE_CLIENT_EMAIL,
       private_key: privateKey,
@@ -27,7 +31,7 @@ export async function getSheetsClient(): Promise<{
     scopes: ['https://www.googleapis.com/auth/spreadsheets'],
   });
 
-  const sheets = google.sheets({ version: 'v4', auth });
+  const sheets = sheetsApi({ version: 'v4', auth });
   cached = { sheets, spreadsheetId };
   return cached;
 }

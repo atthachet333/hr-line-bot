@@ -3,6 +3,9 @@
 import { useEffect, useState } from 'react';
 import liff from '@line/liff';
 import { useMounted } from '@/lib/hooks/use-mounted';
+import { initializeLiffSession, LiffAuthError } from '@/lib/liff/session';
+import { authenticatedFetch } from '@/lib/liff/authenticated-fetch';
+import { liffErrorMessage } from '@/lib/liff/error-messages';
 
 export default function CheckInPage() {
   const isMounted = useMounted();
@@ -24,16 +27,17 @@ export default function CheckInPage() {
     
     // ตั้งค่า LIFF พร้อมดึงชื่อคนใช้งาน
     const initLiff = async () => {
+      const session = await initializeLiffSession('checkin');
+      if (session.status === 'redirecting') return;
+      if (session.status === 'error') {
+        setErrorMsg(liffErrorMessage(session.code));
+        return;
+      }
       try {
-        await liff.init({ liffId: process.env.NEXT_PUBLIC_LIFF_ID_CHECKIN as string });
-        if (liff.isLoggedIn()) {
-          const profile = await liff.getProfile();
-          setDisplayName(profile.displayName);
-        } else if (!liff.isInClient()) {
-          liff.login();
-        }
-      } catch (err) {
-        console.error('LIFF Init Error:', err);
+        const profile = await liff.getProfile();
+        setDisplayName(profile.displayName);
+      } catch {
+        /* name is cosmetic — the server re-derives identity from the token */
       }
     };
     initLiff();
@@ -72,35 +76,28 @@ export default function CheckInPage() {
     setIsSubmitting(true);
 
     try {
-      const idToken = liff.getIDToken();
-      const accessToken = liff.getAccessToken();
-      if (!idToken && !accessToken) {
-        setErrorMsg('ไม่สามารถยืนยันตัวตนได้ กรุณาเปิดหน้านี้จากแอป LINE');
-        setIsSubmitting(false);
-        return;
-      }
-
-      const res = await fetch('/api/attendance/check-in', {
+      const res = await authenticatedFetch('checkin', '/api/attendance/check-in', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          idToken,
-          accessToken,
           clientRequestId,
           time: currentTime.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
           lat: location.lat,
           lng: location.lng,
-        })
+        }),
       });
 
       const result = await res.json().catch(() => ({}));
       if (res.ok && result.success) {
         setShowPopup(true); // โชว์ Popup เมื่อบันทึกจริงสำเร็จเท่านั้น
+      } else if (res.status === 401) {
+        setErrorMsg(liffErrorMessage('AUTHENTICATION_ERROR'));
       } else {
         setErrorMsg(result.message || result.error || 'บันทึกเวลาเข้างานไม่สำเร็จ กรุณาลองใหม่');
       }
-    } catch {
-      setErrorMsg('ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้ กรุณาลองใหม่');
+    } catch (err) {
+      if (err instanceof LiffAuthError) setErrorMsg(liffErrorMessage(err.code));
+      else setErrorMsg('ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้ กรุณาลองใหม่');
     } finally {
       setIsSubmitting(false);
     }

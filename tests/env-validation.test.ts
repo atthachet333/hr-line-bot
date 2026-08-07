@@ -13,6 +13,12 @@ const KEYS = [
   'GOOGLE_APPS_SCRIPT_URL',
   'APP_BASE_URL',
   'INTERNAL_API_SECRET',
+  'NEXT_PUBLIC_LIFF_ID',
+  'NEXT_PUBLIC_LIFF_ID_LEAVE',
+  'NEXT_PUBLIC_LIFF_ID_BALANCE',
+  'NEXT_PUBLIC_LIFF_ID_CHECKIN',
+  'NEXT_PUBLIC_LIFF_ID_CHECKOUT',
+  'EMPLOYEE_LINE_LOGIN_CHANNEL_ID',
 ];
 
 const saved: Record<string, string | undefined> = {};
@@ -41,6 +47,11 @@ function goodProdEnv() {
   set('GOOGLE_APPS_SCRIPT_URL', 'https://script.google.com/macros/s/AAA/exec');
   set('APP_BASE_URL', 'https://hr.example.com');
   set('INTERNAL_API_SECRET', 'internal-secret-123');
+  set('NEXT_PUBLIC_LIFF_ID', '2010618791-KY777Hrw');
+  set('NEXT_PUBLIC_LIFF_ID_BALANCE', '2010618791-6K8d8hmx');
+  set('NEXT_PUBLIC_LIFF_ID_CHECKIN', '2010618791-ybX6PWJy');
+  set('NEXT_PUBLIC_LIFF_ID_CHECKOUT', '2010618791-9Cdcy05Z');
+  set('EMPLOYEE_LINE_LOGIN_CHANNEL_ID', '2010618791');
 }
 
 describe('parseList', () => {
@@ -99,5 +110,29 @@ describe('validateEnvironment', () => {
     set('GOOGLE_SHEET_ID', 'YOUR_SHEET_ID');
     const r = validateEnvironment({ production: true, requireSecrets: true });
     expect(r.ok).toBe(false);
+  });
+
+  it('rejects a missing page LIFF id in production', () => {
+    goodProdEnv();
+    set('NEXT_PUBLIC_LIFF_ID_CHECKIN', undefined);
+    const r = validateEnvironment({ production: true, requireSecrets: true });
+    expect(r.ok).toBe(false);
+    expect(r.errors.join()).toContain('LIFF ID');
+  });
+
+  it('rejects LIFF ids from different LINE Login channels', () => {
+    goodProdEnv();
+    set('NEXT_PUBLIC_LIFF_ID_BALANCE', '9999999999-otherchan');
+    const r = validateEnvironment({ production: true, requireSecrets: true });
+    expect(r.ok).toBe(false);
+    expect(r.errors.join()).toContain('channel');
+  });
+
+  it('rejects a LIFF prefix that mismatches EMPLOYEE_LINE_LOGIN_CHANNEL_ID', () => {
+    goodProdEnv();
+    set('EMPLOYEE_LINE_LOGIN_CHANNEL_ID', '1111111111');
+    const r = validateEnvironment({ production: true, requireSecrets: true });
+    expect(r.ok).toBe(false);
+    expect(r.errors.join()).toContain('EMPLOYEE_LINE_LOGIN_CHANNEL_ID');
   });
 });

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from 'vitest';
+import { emptyEvidenceMetadata } from '@/lib/evidence/types';
 import type { LeaveRequest } from '@/lib/domain/leave-request';
 import type { LineApiResult } from '@/lib/line/types';
 import type { FoundRequest } from '@/lib/repositories/leave-request-repository';
@@ -81,6 +82,7 @@ function pendingRequest(overrides: Partial<LeaveRequest> = {}): LeaveRequest {
     employeeNotificationAttempts: 0,
     employeeNotificationLastAttemptAt: '',
     employeeNotificationError: '',
+    ...emptyEvidenceMetadata(),
     ...overrides,
   };
 }

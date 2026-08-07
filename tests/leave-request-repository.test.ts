@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { emptyEvidenceMetadata } from '@/lib/evidence/types';
 import { LEAVE_REQUEST_COLUMNS, type LeaveRequest } from '@/lib/domain/leave-request';
 
 /**
@@ -81,6 +82,7 @@ function sampleRequest(requestId: string): LeaveRequest {
     employeeNotificationAttempts: 0,
     employeeNotificationLastAttemptAt: '',
     employeeNotificationError: '',
+    ...emptyEvidenceMetadata(),
   };
 }
 
@@ -111,10 +113,62 @@ describe('leave request repository', () => {
 
   it('detects overlapping active requests', async () => {
     await repo.create(sampleRequest('REQ-20260725-DDDD4444'));
-    const overlap = await repo.findOverlapping('U-emp', '2026-07-26', '2026-07-28');
+    const overlap = await repo.findOverlapping('U-emp', 'EMP001', '2026-07-26', '2026-07-28');
     expect(overlap?.requestId).toBe('REQ-20260725-DDDD4444');
-    const noOverlap = await repo.findOverlapping('U-emp', '2026-08-01', '2026-08-02');
+    const noOverlap = await repo.findOverlapping('U-emp', 'EMP001', '2026-08-01', '2026-08-02');
     expect(noOverlap).toBeNull();
+  });
+
+  describe('findOverlapping — per-employee only (Bug 1 regression)', () => {
+    it('A on 10 Aug does NOT block B on 10 Aug (different employees)', async () => {
+      await repo.create({
+        ...sampleRequest('REQ-20260810-AAAA0001'),
+        employeeLineUserId: 'U-A', employeeId: 'S2A001',
+        startDate: '2026-08-10', endDate: '2026-08-10', status: 'APPROVED',
+      });
+      const bOverlap = await repo.findOverlapping('U-B', 'S2A002', '2026-08-10', '2026-08-10');
+      expect(bOverlap).toBeNull(); // B is free to take the same day
+    });
+
+    it('A cannot double-book their OWN overlapping dates (inclusive)', async () => {
+      await repo.create({
+        ...sampleRequest('REQ-20260810-AAAA0010'),
+        employeeLineUserId: 'U-A', employeeId: 'S2A001',
+        startDate: '2026-08-10', endDate: '2026-08-11', status: 'PENDING',
+      });
+      // 11 Aug intersects 10–11 Aug (inclusive end).
+      const dup = await repo.findOverlapping('U-A', 'S2A001', '2026-08-11', '2026-08-12');
+      expect(dup?.requestId).toBe('REQ-20260810-AAAA0010');
+    });
+
+    it('REJECTED / CANCELLED do NOT block a new request', async () => {
+      await repo.create({
+        ...sampleRequest('REQ-20260810-AAAA0020'),
+        employeeLineUserId: 'U-A', employeeId: 'S2A001',
+        startDate: '2026-08-10', endDate: '2026-08-10', status: 'REJECTED',
+      });
+      await repo.create({
+        ...sampleRequest('REQ-20260810-AAAA0021'),
+        employeeLineUserId: 'U-A', employeeId: 'S2A001',
+        startDate: '2026-08-12', endDate: '2026-08-12', status: 'CANCELLED',
+      });
+      expect(await repo.findOverlapping('U-A', 'S2A001', '2026-08-10', '2026-08-10')).toBeNull();
+      expect(await repo.findOverlapping('U-A', 'S2A001', '2026-08-12', '2026-08-12')).toBeNull();
+    });
+
+    it('matches the SAME employee by canonical employeeId even if lineUserId is blank', async () => {
+      await repo.create({
+        ...sampleRequest('REQ-20260810-LEGACY01'),
+        employeeLineUserId: '', employeeId: 's2a001', // legacy row, lowercase id, no line id
+        startDate: '2026-08-10', endDate: '2026-08-10', status: 'PENDING',
+      });
+      // Same employee (canonical S2A001) is blocked...
+      expect((await repo.findOverlapping('U-A', 'S2A001', '2026-08-10', '2026-08-10'))?.requestId).toBe(
+        'REQ-20260810-LEGACY01',
+      );
+      // ...but a different employee with a blank line id is NOT (no ''==='' collision).
+      expect(await repo.findOverlapping('', 'S2A999', '2026-08-10', '2026-08-10')).toBeNull();
+    });
   });
 
   it('approves a PENDING request (test case: approve pending)', async () => {

@@ -2,7 +2,52 @@ import type { LeaveRequest, LeaveStatus } from '@/lib/domain/leave-request';
 import { formatThaiDateTime } from '@/lib/utils/datetime';
 import { buildPostbackData } from './postback';
 import { REJECT_REASONS } from '@/lib/domain/reject-reasons';
+import { evidenceViewerUrl } from '@/lib/liff/config';
 import type { LineFlexMessage } from './types';
+
+function formatBytes(n: number): string {
+  if (!n || n <= 0) return '0 KB';
+  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(n / 1024))} KB`;
+}
+
+/**
+ * Evidence section for the manager Flex. Shows "no evidence" when none, or a
+ * label + a viewer button (image vs PDF) when AVAILABLE. Never embeds the file
+ * or a storage path — only a secure viewer link.
+ */
+function evidenceSection(req: LeaveRequest): object[] {
+  const separator = { type: 'separator', margin: 'md' };
+  if (req.evidenceStatus !== 'AVAILABLE') {
+    return [
+      separator,
+      { type: 'text', text: '📎 หลักฐานประกอบ', weight: 'bold', size: 'sm', margin: 'md' },
+      { type: 'text', text: 'ไม่มีหลักฐานแนบ', size: 'sm', color: '#8c8c8c' },
+    ];
+  }
+  const isPdf = req.evidenceMimeType === 'application/pdf';
+  return [
+    separator,
+    { type: 'text', text: isPdf ? '📄 หลักฐานประกอบ' : '📎 หลักฐานประกอบ', weight: 'bold', size: 'sm', margin: 'md' },
+    {
+      type: 'text',
+      text: isPdf ? `${req.evidenceOriginalFileName || 'เอกสาร'} (${formatBytes(req.evidenceSize)})` : 'มีรูปภาพแนบ',
+      size: 'sm',
+      color: '#555555',
+      wrap: true,
+    },
+    {
+      type: 'button',
+      style: 'link',
+      height: 'sm',
+      action: {
+        type: 'uri',
+        label: isPdf ? 'เปิดเอกสาร' : 'เปิดดูหลักฐาน',
+        uri: evidenceViewerUrl(req.requestId),
+      },
+    },
+  ];
+}
 
 function row(label: string, value: string) {
   return {
@@ -101,6 +146,7 @@ export function buildManagerFlexMessage(req: LeaveRequest): LineFlexMessage {
           row('จำนวนวัน', `${req.totalDays} วัน`),
           row('เหตุผล', req.reason),
           row('ยื่นเมื่อ', formatThaiDateTime(req.createdAt)),
+          ...evidenceSection(req),
           {
             type: 'box',
             layout: 'baseline',

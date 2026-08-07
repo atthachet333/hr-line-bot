@@ -1,0 +1,26 @@
+{
+  "_comment": "Rich Menu for `npm run richmenu:update`. {{LIFF_*}} placeholders are replaced with https://liff.line.me/<id> from NEXT_PUBLIC_LIFF_ID_*. Layout matches the image: a full-width 'แจ้งลา' button on top, and three buttons (เข้างาน/ออกงาน/เช็กสิทธิ์) on the bottom row.",
+  "size": { "width": 2500, "height": 1686 },
+  "selected": true,
+  "name": "S2A HR Menu",
+  "chatBarText": "เมนู",
+  "image": "config/richmenu.jpg",
+  "areas": [
+    {
+      "bounds": { "x": 0, "y": 0, "width": 2500, "height": 843 },
+      "action": { "type": "uri", "label": "แจ้งลา", "uri": "{{LIFF_LEAVE}}" }
+    },
+    {
+      "bounds": { "x": 0, "y": 843, "width": 833, "height": 843 },
+      "action": { "type": "uri", "label": "แจ้งเข้างาน", "uri": "{{LIFF_CHECKIN}}" }
+    },
+    {
+      "bounds": { "x": 833, "y": 843, "width": 834, "height": 843 },
+      "action": { "type": "uri", "label": "แจ้งออกงาน", "uri": "{{LIFF_CHECKOUT}}" }
+    },
+    {
+      "bounds": { "x": 1667, "y": 843, "width": 833, "height": 843 },
+      "action": { "type": "uri", "label": "เช็กสิทธิ์", "uri": "{{LIFF_BALANCE}}" }
+    }
+  ]
+}

@@ -42,3 +42,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Rich Menu download-back verification artifact
+config/richmenu-downloaded.jpg

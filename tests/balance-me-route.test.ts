@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Employee } from '@/lib/repositories/employee-repository';
-import type { BalanceSummary } from '@/lib/services/balance-summary-service';
+import type { BalanceOutcome } from '@/lib/services/balance-summary-service';
 
 const verifyIdentityMock = vi.fn();
 vi.mock('@/lib/line/identity', () => ({
@@ -12,27 +12,25 @@ vi.mock('@/lib/repositories/employee-repository', () => ({
   findByLineUserId: () => findByLineUserIdMock(),
 }));
 
-const computeBalanceSummaryMock = vi.fn<() => Promise<BalanceSummary>>();
+const computeBalanceSummaryMock = vi.fn<() => Promise<BalanceOutcome>>();
 vi.mock('@/lib/services/balance-summary-service', () => ({
   computeBalanceSummary: (...a: unknown[]) => computeBalanceSummaryMock(...(a as [])),
 }));
 
 import { GET } from '@/app/api/balance/me/route';
-import { BusinessRuleError } from '@/lib/errors';
 
 const EMPLOYEE: Employee = {
-  lineUserId: 'U-A',
-  employeeId: 'S2A001',
-  name: 'สมชาย',
-  position: 'dev',
-  department: 'IT',
-  managerLineUserId: 'U-mgr',
+  lineUserId: 'U-A', employeeId: 'S2A001', name: 'สมชาย', position: 'dev', department: 'IT', managerLineUserId: 'U-mgr',
 };
 
-const SUMMARY: BalanceSummary = {
-  sick: { entitlement: 30, used: 2, remaining: 28 },
-  business: { entitlement: 6, used: 0, remaining: 6 },
-  annual: { entitlement: 6, used: 4, remaining: 2 },
+const OK_OUTCOME: BalanceOutcome = {
+  ok: true,
+  summary: {
+    sick: { entitlement: 30, used: 2, remaining: 28 },
+    business: { entitlement: 6, used: 0, remaining: 6 },
+    annual: { entitlement: 6, used: 4, remaining: 2 },
+  },
+  meta: { balanceRowFound: true, entitlementFieldsFound: { sick: true, business: true, annual: true }, approvedLeaveCount: 2 },
 };
 
 function req(token: string | null): Request {
@@ -45,18 +43,18 @@ beforeEach(() => {
   vi.clearAllMocks();
   verifyIdentityMock.mockResolvedValue({ ok: true, identity: { lineUserId: 'U-A' } });
   findByLineUserIdMock.mockResolvedValue(EMPLOYEE);
-  computeBalanceSummaryMock.mockResolvedValue(SUMMARY);
+  computeBalanceSummaryMock.mockResolvedValue(OK_OUTCOME);
 });
 
 describe('GET /api/balance/me', () => {
-  it('returns the computed balances with no-store', async () => {
+  it('returns balances + source with no-store', async () => {
     const res = await GET(req('tok'));
-    const body = (await res.json()) as { success: boolean; balances: BalanceSummary };
+    const body = (await res.json()) as Record<string, unknown>;
     expect(res.status).toBe(200);
     expect(res.headers.get('cache-control')).toBe('no-store');
     expect(body.success).toBe(true);
-    expect(body.balances.annual).toEqual({ entitlement: 6, used: 4, remaining: 2 });
-    // Identity resolved from the token → sheet; the service gets those values.
+    expect((body.balances as Record<string, unknown>).annual).toEqual({ entitlement: 6, used: 4, remaining: 2 });
+    expect(body.source).toEqual({ entitlement: 'Balances', used: 'LeaveRequests' });
     expect(computeBalanceSummaryMock).toHaveBeenCalledWith('U-A', 'S2A001');
   });
 
@@ -66,7 +64,7 @@ describe('GET /api/balance/me', () => {
     expect(verifyIdentityMock).not.toHaveBeenCalled();
   });
 
-  it('returns EMPLOYEE_NOT_LINKED (403) when the user is not linked', async () => {
+  it('maps EMPLOYEE_NOT_LINKED to 403', async () => {
     findByLineUserIdMock.mockResolvedValue(null);
     const res = await GET(req('tok'));
     expect(res.status).toBe(403);
@@ -74,13 +72,24 @@ describe('GET /api/balance/me', () => {
     expect(computeBalanceSummaryMock).not.toHaveBeenCalled();
   });
 
-  it('surfaces BALANCE_NOT_CONFIGURED (422) instead of a fake balance', async () => {
-    computeBalanceSummaryMock.mockRejectedValue(
-      new BusinessRuleError('BALANCE_NOT_CONFIGURED', 'no row', 422),
-    );
+  it('maps BALANCE_NOT_CONFIGURED to 422 (no fake balance)', async () => {
+    computeBalanceSummaryMock.mockResolvedValue({
+      ok: false, code: 'BALANCE_NOT_CONFIGURED', message: 'no row',
+      meta: { balanceRowFound: false, entitlementFieldsFound: { sick: false, business: false, annual: false }, approvedLeaveCount: 0 },
+    });
     const res = await GET(req('tok'));
     expect(res.status).toBe(422);
     expect((await res.json() as { code: string }).code).toBe('BALANCE_NOT_CONFIGURED');
     expect(res.headers.get('cache-control')).toBe('no-store');
+  });
+
+  it('maps BALANCE_DATA_INVALID to 422', async () => {
+    computeBalanceSummaryMock.mockResolvedValue({
+      ok: false, code: 'BALANCE_DATA_INVALID', message: 'bad',
+      meta: { balanceRowFound: true, entitlementFieldsFound: { sick: false, business: true, annual: true }, approvedLeaveCount: 1 },
+    });
+    const res = await GET(req('tok'));
+    expect(res.status).toBe(422);
+    expect((await res.json() as { code: string }).code).toBe('BALANCE_DATA_INVALID');
   });
 });

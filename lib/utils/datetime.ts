@@ -187,13 +187,24 @@ export function formatThaiDateRange(startValue: unknown, endValue: unknown): str
 
 /** yyyymmdd in Asia/Bangkok, used inside request ids. */
 export function bangkokDateStamp(date = new Date()): string {
-  const parts = new Intl.DateTimeFormat('en-CA', {
+  return businessDateThailand(date).replace(/-/g, '');
+}
+
+/**
+ * The business calendar date ("YYYY-MM-DD") for an instant, computed in the
+ * company timezone (Asia/Bangkok). This is the single source of truth for
+ * "today" across check-in / check-out — never derive the date from
+ * `new Date().toISOString().slice(0,10)`, which is UTC and would roll the date a
+ * day early for the hours around midnight Thai time (e.g. 00:30 on 10 Aug ICT is
+ * still 9 Aug in UTC).
+ */
+export function businessDateThailand(date: Date = new Date()): string {
+  return new Intl.DateTimeFormat('en-CA', {
     timeZone: BANGKOK_TZ,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
   }).format(date); // en-CA => YYYY-MM-DD
-  return parts.replace(/-/g, '');
 }
 
 /**

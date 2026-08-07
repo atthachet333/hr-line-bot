@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { sheets_v4 } from 'googleapis';
+import type { sheets_v4 } from 'googleapis/build/src/apis/sheets';
 import { validateSheetsSchema } from '@/lib/sheets/schema-validator';
 import { LEAVE_REQUEST_COLUMNS } from '@/lib/domain/leave-request';
 

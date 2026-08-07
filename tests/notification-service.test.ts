@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { emptyEvidenceMetadata } from '@/lib/evidence/types';
 import type { LeaveRequest } from '@/lib/domain/leave-request';
 import type { LineApiResult } from '@/lib/line/types';
 
@@ -52,6 +53,7 @@ function approved(): LeaveRequest {
     employeeNotificationAttempts: 0,
     employeeNotificationLastAttemptAt: '',
     employeeNotificationError: '',
+    ...emptyEvidenceMetadata(),
   };
 }
 

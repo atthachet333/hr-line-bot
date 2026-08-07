@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { emptyEvidenceMetadata } from '@/lib/evidence/types';
 import type { LeaveRequest } from '@/lib/domain/leave-request';
 import {
   buildApprovedLeaveFlexMessage,
@@ -41,6 +42,7 @@ function sample(overrides: Partial<LeaveRequest> = {}): LeaveRequest {
     employeeNotificationAttempts: 0,
     employeeNotificationLastAttemptAt: '',
     employeeNotificationError: '',
+    ...emptyEvidenceMetadata(),
     ...overrides,
   };
 }

@@ -3,6 +3,18 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import liff from '@line/liff';
 import { useMounted } from '@/lib/hooks/use-mounted';
+import { initializeLiffSession, LiffAuthError, escalateRelogin } from '@/lib/liff/session';
+import { authenticatedFetch } from '@/lib/liff/authenticated-fetch';
+import { liffErrorMessage } from '@/lib/liff/error-messages';
+import { createSingleClose } from '@/lib/liff/close-window';
+
+const EVIDENCE_ALLOWED = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+const EVIDENCE_MAX_BYTES = 10 * 1024 * 1024;
+
+function formatBytes(n: number): string {
+  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(n / 1024))} KB`;
+}
 
 interface EmployeeProfile {
   employeeId: string;
@@ -11,7 +23,7 @@ interface EmployeeProfile {
   department: string;
 }
 
-type Phase = 'loading' | 'need_link' | 'ready' | 'error';
+type Phase = 'loading' | 'redirecting' | 'need_link' | 'ready' | 'error';
 
 const FONT_STYLE = (
   <style>{`@import url('https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700&display=swap'); .font-prompt { font-family: 'Prompt', sans-serif; }`}</style>
@@ -42,7 +54,11 @@ export default function LeavePage() {
   const [phase, setPhase] = useState<Phase>('loading');
   const [fatalError, setFatalError] = useState('');
   const [employee, setEmployee] = useState<EmployeeProfile | null>(null);
-  const accessTokenRef = useRef<string | null>(null);
+
+  // Optional evidence attachment.
+  const [evidenceFile, setEvidenceFile] = useState<File | null>(null);
+  const [evidencePreview, setEvidencePreview] = useState('');
+  const [evidenceError, setEvidenceError] = useState('');
 
   // Account-linking screen state.
   const [employeeIdInput, setEmployeeIdInput] = useState('');
@@ -59,20 +75,23 @@ export default function LeavePage() {
     typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
   );
 
+  // Single-close guard: closeWindow() runs at most once in-client; external
+  // browsers just dismiss the popup. Reused by the auto-close and the button.
+  const closeOnceRef = useRef<(() => void) | null>(null);
+  if (closeOnceRef.current == null) {
+    closeOnceRef.current = createSingleClose({
+      isInClient: () => liff.isInClient(),
+      closeWindow: () => liff.closeWindow(),
+      onFallback: () => setShowPopup(false),
+    });
+  }
+  const closeOnce = () => closeOnceRef.current?.();
+  const closeLiff = closeOnce;
+
   // Fetch the authoritative link status. Identity is never taken from cache.
   const fetchMe = useCallback(async (): Promise<void> => {
-    const token = accessTokenRef.current;
-    if (!token) {
-      setPhase('error');
-      setFatalError('ไม่สามารถยืนยันตัวตนได้ กรุณาเปิดหน้านี้จากแอป LINE');
-      return;
-    }
     try {
-      const res = await fetch('/api/employee/me', {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${token}` },
-        cache: 'no-store',
-      });
+      const res = await authenticatedFetch('leave', '/api/employee/me');
       const result = await res.json().catch(() => ({}));
       if (res.ok && result.success && result.linked) {
         setEmployee(result.employee as EmployeeProfile);
@@ -81,15 +100,31 @@ export default function LeavePage() {
         setEmployee(null);
         setPhase('need_link');
       } else if (res.status === 401) {
-        setPhase('error');
-        setFatalError('ไม่สามารถยืนยันตัวตนได้ กรุณาเปิดหน้านี้จากแอป LINE อีกครั้ง');
+        // Session expired mid-use: escalate to a fresh login (guarded, no loop).
+        const outcome = escalateRelogin('leave');
+        if (outcome === 'redirecting') {
+          setPhase('redirecting'); // "กำลังเข้าสู่ระบบ LINE ใหม่…" while liff.login navigates
+        } else {
+          setPhase('error');
+          setFatalError(liffErrorMessage('AUTHENTICATION_ERROR'));
+        }
       } else {
         setPhase('error');
         setFatalError(result.message || 'ไม่สามารถโหลดข้อมูลบัญชีได้ กรุณาลองใหม่');
       }
-    } catch {
-      setPhase('error');
-      setFatalError('ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้ กรุณาลองใหม่');
+    } catch (err) {
+      if (err instanceof LiffAuthError) {
+        // Token acquisition triggered a login/redirect — show the re-login state.
+        if (err.code === 'LIFF_LOGIN_REQUIRED') {
+          setPhase('redirecting');
+          return;
+        }
+        setPhase('error');
+        setFatalError(liffErrorMessage(err.code));
+      } else {
+        setPhase('error');
+        setFatalError('ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้ กรุณาลองใหม่');
+      }
     }
   }, []);
 
@@ -104,33 +139,26 @@ export default function LeavePage() {
       } catch {
         /* storage unavailable — ignore */
       }
-      try {
-        await liff.init({ liffId: process.env.NEXT_PUBLIC_LIFF_ID || '' });
-        if (!liff.isLoggedIn()) {
-          if (!liff.isInClient()) {
-            liff.login();
-            return;
-          }
-        }
-        accessTokenRef.current = liff.getAccessToken();
-        await fetchMe();
-      } catch {
-        setPhase('error');
-        setFatalError('ไม่สามารถเริ่มต้น LINE ได้ กรุณาเปิดหน้านี้จากแอป LINE');
+      const session = await initializeLiffSession('leave');
+      if (session.status === 'redirecting') {
+        setPhase('redirecting'); // logging in / re-logging in
+        return;
       }
+      if (session.status === 'error') {
+        setPhase('error');
+        setFatalError(liffErrorMessage(session.code));
+        return;
+      }
+      await fetchMe();
     };
-    init();
+    const id = setTimeout(() => void init(), 0);
+    return () => clearTimeout(id);
   }, [fetchMe]);
 
   const handleLink = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (isLinking) return;
     setLinkError('');
-    const token = accessTokenRef.current;
-    if (!token) {
-      setLinkError('ไม่สามารถยืนยันตัวตนได้ กรุณาเปิดหน้านี้จากแอป LINE');
-      return;
-    }
     const employeeId = employeeIdInput.trim().toUpperCase();
     if (!employeeId) {
       setLinkError('กรุณากรอกรหัสพนักงาน');
@@ -138,9 +166,9 @@ export default function LeavePage() {
     }
     setIsLinking(true);
     try {
-      const res = await fetch('/api/employee/link', {
+      const res = await authenticatedFetch('leave', '/api/employee/link', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ employeeId }),
       });
       const result = await res.json().catch(() => ({}));
@@ -158,15 +186,49 @@ export default function LeavePage() {
       } else if (code === 'LINE_ACCOUNT_ALREADY_LINKED') {
         setLinkError('บัญชี LINE นี้เชื่อมกับพนักงานรายอื่นแล้ว กรุณาติดต่อฝ่ายบุคคล');
       } else if (res.status === 401) {
-        setLinkError('ไม่สามารถยืนยันตัวตนได้ กรุณาเปิดหน้านี้จากแอป LINE อีกครั้ง');
+        setLinkError(liffErrorMessage('AUTHENTICATION_ERROR'));
       } else {
         setLinkError(result.message || 'ไม่สามารถผูกบัญชีได้ กรุณาลองใหม่');
       }
-    } catch {
-      setLinkError('ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้ กรุณาลองใหม่');
+    } catch (err) {
+      setLinkError(err instanceof LiffAuthError ? liffErrorMessage(err.code) : 'ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้ กรุณาลองใหม่');
     } finally {
       setIsLinking(false);
     }
+  };
+
+  const onEvidenceChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setEvidenceError('');
+    const file = e.target.files?.[0] ?? null;
+    if (evidencePreview) {
+      URL.revokeObjectURL(evidencePreview);
+      setEvidencePreview('');
+    }
+    if (!file) {
+      setEvidenceFile(null);
+      return;
+    }
+    if (!EVIDENCE_ALLOWED.includes(file.type)) {
+      setEvidenceError('รองรับเฉพาะไฟล์ JPG, PNG, WEBP หรือ PDF');
+      setEvidenceFile(null);
+      e.target.value = '';
+      return;
+    }
+    if (file.size > EVIDENCE_MAX_BYTES) {
+      setEvidenceError('ไฟล์มีขนาดใหญ่เกิน 10 MB');
+      setEvidenceFile(null);
+      e.target.value = '';
+      return;
+    }
+    setEvidenceFile(file);
+    if (file.type.startsWith('image/')) setEvidencePreview(URL.createObjectURL(file));
+  };
+
+  const removeEvidence = () => {
+    if (evidencePreview) URL.revokeObjectURL(evidencePreview);
+    setEvidencePreview('');
+    setEvidenceFile(null);
+    setEvidenceError('');
   };
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -175,58 +237,56 @@ export default function LeavePage() {
     setErrorMsg('');
     setIsSubmitting(true);
 
-    const formData = new FormData(e.currentTarget);
+    const raw = new FormData(e.currentTarget);
     const finalLeaveType = leaveType === 'ลาอื่นๆ' ? `ลาอื่นๆ (${otherLeaveType})` : leaveType;
 
     try {
-      const idToken = liff.getIDToken();
-      const accessToken = liff.getAccessToken();
-      if (!idToken && !accessToken) {
-        setErrorMsg('ไม่สามารถยืนยันตัวตนได้ กรุณาเปิดหน้านี้จากแอป LINE');
-        setIsSubmitting(false);
-        return;
-      }
+      // multipart/form-data so an optional evidence file can ride along. The
+      // access token is attached as Bearer by authenticatedFetch (no base64/blob
+      // is ever persisted client-side).
+      const fd = new FormData();
+      fd.append('clientRequestId', clientRequestId);
+      fd.append('leaveType', finalLeaveType);
+      fd.append('startDate', String(raw.get('startDate') ?? ''));
+      fd.append('endDate', String(raw.get('endDate') ?? ''));
+      fd.append('reason', String(raw.get('reason') ?? ''));
+      if (evidenceFile) fd.append('evidence', evidenceFile, evidenceFile.name);
 
-      const res = await fetch('/api/leave', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          idToken,
-          accessToken,
-          clientRequestId,
-          leaveType: finalLeaveType,
-          startDate: formData.get('startDate'),
-          endDate: formData.get('endDate'),
-          reason: formData.get('reason'),
-        }),
-      });
-
+      const res = await authenticatedFetch('leave', '/api/leave', { method: 'POST', body: fd });
       const result = await res.json().catch(() => ({}));
       if (res.ok && result.success) {
+        // Evidence (if any) was part of this multipart request, so it is fully
+        // uploaded by the time we get success. Show the success state briefly,
+        // then auto-close the LIFF window (once) when inside the LINE client.
         setShowPopup(true);
+        if (liff.isInClient()) window.setTimeout(() => closeOnce(), 1200);
       } else if (result.code === 'EMPLOYEE_NOT_LINKED') {
-        // The link was lost/removed between load and submit — send them back.
         setPhase('need_link');
+      } else if (res.status === 401) {
+        const outcome = escalateRelogin('leave');
+        if (outcome === 'redirecting') setPhase('redirecting');
+        else setErrorMsg(liffErrorMessage('AUTHENTICATION_ERROR'));
       } else {
         setErrorMsg(result.message || result.error || 'ไม่สามารถส่งคำขอได้ กรุณาลองใหม่อีกครั้ง');
       }
-    } catch {
-      setErrorMsg('ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้ กรุณาลองใหม่อีกครั้ง');
+    } catch (err) {
+      if (err instanceof LiffAuthError && err.code === 'LIFF_LOGIN_REQUIRED') setPhase('redirecting');
+      else setErrorMsg(err instanceof LiffAuthError ? liffErrorMessage(err.code) : 'ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้ กรุณาลองใหม่อีกครั้ง');
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const closeLiff = () => (liff.isInClient() ? liff.closeWindow() : setShowPopup(false));
-
   if (!isMounted) return null;
 
-  if (phase === 'loading') {
+  if (phase === 'loading' || phase === 'redirecting') {
     return (
       <Shell>
         <div className="flex flex-col items-center justify-center py-24">
           <div className="w-10 h-10 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mb-4"></div>
-          <p className="text-sm text-indigo-600 font-semibold">กำลังตรวจสอบบัญชี...</p>
+          <p className="text-sm text-indigo-600 font-semibold">
+            {phase === 'redirecting' ? 'กำลังเข้าสู่ระบบ LINE ใหม่…' : 'กำลังตรวจสอบบัญชี...'}
+          </p>
         </div>
       </Shell>
     );
@@ -367,6 +427,40 @@ export default function LeavePage() {
               <div className="pt-2">
                 <label className="block text-sm font-semibold text-slate-700 mb-2">เหตุผลการลา <span className="text-red-500">*</span></label>
                 <textarea name="reason" required className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-sm text-slate-700 h-24 resize-none" placeholder="โปรดระบุเหตุผลอย่างละเอียด..."></textarea>
+              </div>
+
+              {/* Optional evidence attachment — never required */}
+              <div className="pt-2">
+                <label className="block text-sm font-semibold text-slate-700 mb-1">แนบหลักฐานการลา (ไม่บังคับ)</label>
+                <p className="text-xs text-slate-400 mb-2">รองรับ JPG, PNG, WEBP หรือ PDF ขนาดไม่เกิน 10 MB</p>
+                {!evidenceFile ? (
+                  <label className="flex flex-col items-center justify-center gap-2 w-full px-4 py-6 bg-slate-50 border-2 border-dashed border-slate-200 rounded-xl cursor-pointer text-slate-500 hover:border-indigo-300 transition-colors">
+                    <span className="text-2xl">📎</span>
+                    <span className="text-xs font-medium">เลือกรูปภาพหรือไฟล์ PDF</span>
+                    <input type="file" accept="image/jpeg,image/png,image/webp,application/pdf" className="hidden" onChange={onEvidenceChange} />
+                  </label>
+                ) : (
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
+                    <div className="flex items-center gap-3">
+                      {evidencePreview ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={evidencePreview} alt="ตัวอย่างหลักฐาน" className="w-14 h-14 object-cover rounded-lg border border-slate-200" />
+                      ) : (
+                        <div className="w-14 h-14 rounded-lg bg-red-50 flex items-center justify-center text-2xl">📄</div>
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-slate-800 truncate">{evidenceFile.name}</p>
+                        <p className="text-xs text-slate-400">{formatBytes(evidenceFile.size)}</p>
+                      </div>
+                      <button type="button" onClick={removeEvidence} className="text-red-500 text-sm font-semibold px-2 py-1 hover:bg-red-50 rounded-lg">ลบ</button>
+                    </div>
+                    <label className="block mt-2 text-center text-xs text-indigo-600 font-medium cursor-pointer">
+                      เปลี่ยนไฟล์
+                      <input type="file" accept="image/jpeg,image/png,image/webp,application/pdf" className="hidden" onChange={onEvidenceChange} />
+                    </label>
+                  </div>
+                )}
+                {evidenceError && <p className="mt-2 text-xs text-red-600">{evidenceError}</p>}
               </div>
             </div>
 

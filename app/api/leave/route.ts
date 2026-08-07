@@ -1,11 +1,11 @@
-import type { NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { env } from '@/lib/env';
 import { correlationIdFrom } from '@/lib/utils/correlation';
 import { maskId } from '@/lib/utils/mask';
-import { readJsonBody } from '@/lib/http/guards';
+import { readJsonBody, bearerToken } from '@/lib/http/guards';
 import { ok, fail } from '@/lib/http/respond';
 import { rateLimit } from '@/lib/rate-limit';
-import { AuthenticationError, ConflictError, RateLimitError } from '@/lib/errors';
+import { AuthenticationError, BusinessRuleError, ConflictError, RateLimitError } from '@/lib/errors';
 import { logger } from '@/lib/logger';
 import { verifyIdentity } from '@/lib/line/identity';
 import { validateLeaveInput } from '@/lib/validation/leave';
@@ -18,6 +18,9 @@ import { assertSufficientBalance } from '@/lib/services/leave-balance-service';
 import { sendManagerNotification } from '@/lib/services/notification-service';
 import { generateRequestId } from '@/lib/utils/request-id';
 import { nowIso } from '@/lib/utils/datetime';
+import { validateEvidence, type ValidatedEvidence } from '@/lib/evidence/validate';
+import { saveEvidence, isValidEvidenceEmployeeId } from '@/lib/evidence/storage';
+import { emptyEvidenceMetadata, type EvidenceMetadata } from '@/lib/evidence/types';
 import type { LeaveRequest } from '@/lib/domain/leave-request';
 
 export const runtime = 'nodejs';
@@ -27,30 +30,77 @@ const ROUTE = 'POST /api/leave';
 const RATE_LIMIT = 10; // per user
 const RATE_WINDOW_MS = 60_000;
 
+interface ParsedRequest {
+  fields: Record<string, unknown>;
+  idToken?: string;
+  accessToken?: string;
+  /** Present only when a non-empty evidence file was attached. */
+  evidence?: { buffer: Uint8Array; fileName: string; mime: string };
+}
+
+/**
+ * Read the request as multipart/form-data (with optional evidence) OR JSON (for
+ * older clients). Enforces the size cap before buffering a large file.
+ */
+async function parseRequest(req: Request, maxBytes: number): Promise<ParsedRequest> {
+  const contentType = (req.headers.get('content-type') || '').toLowerCase();
+  const headerToken = bearerToken(req);
+
+  if (contentType.includes('multipart/form-data')) {
+    const form = await req.formData();
+    const fields: Record<string, unknown> = {};
+    for (const [k, v] of form.entries()) if (typeof v === 'string') fields[k] = v;
+
+    let evidence: ParsedRequest['evidence'];
+    const file = form.get('evidence');
+    if (file && typeof file !== 'string' && file.size > 0) {
+      if (file.size > maxBytes) {
+        throw new BusinessRuleError('EVIDENCE_TOO_LARGE', 'ไฟล์หลักฐานมีขนาดใหญ่เกิน 10 MB', 413);
+      }
+      const buf = new Uint8Array(await file.arrayBuffer());
+      evidence = { buffer: buf, fileName: file.name || 'evidence', mime: file.type || '' };
+    }
+    return {
+      fields,
+      idToken: typeof fields.idToken === 'string' ? fields.idToken : undefined,
+      accessToken: (typeof fields.accessToken === 'string' ? fields.accessToken : undefined) ?? headerToken,
+      evidence,
+    };
+  }
+
+  const body = await readJsonBody<Record<string, unknown>>(req);
+  return {
+    fields: body,
+    idToken: typeof body.idToken === 'string' ? body.idToken : undefined,
+    accessToken: (typeof body.accessToken === 'string' ? body.accessToken : undefined) ?? headerToken,
+  };
+}
+
+function evidenceErrorStatus(code: string): number {
+  if (code === 'EVIDENCE_TOO_LARGE') return 413;
+  if (code === 'UNSUPPORTED_EVIDENCE_TYPE') return 415;
+  return 400; // EVIDENCE_CONTENT_MISMATCH
+}
+
 export async function POST(req: Request): Promise<NextResponse> {
   const correlationId = correlationIdFrom(req);
   const startedAt = Date.now();
+  const maxBytes = env.leaveEvidenceMaxBytes();
   try {
-    const body = await readJsonBody<Record<string, unknown>>(req);
+    const parsed = await parseRequest(req, maxBytes);
 
     // 1. Verify identity from the LINE token (never trust browser identity).
-    const identity = await verifyIdentity({
-      idToken: typeof body.idToken === 'string' ? body.idToken : undefined,
-      accessToken: typeof body.accessToken === 'string' ? body.accessToken : undefined,
-    });
+    const identity = await verifyIdentity({ idToken: parsed.idToken, accessToken: parsed.accessToken });
     if (!identity.ok) {
       throw new AuthenticationError('ไม่สามารถยืนยันตัวตนได้ กรุณาเปิดจากแอป LINE อีกครั้ง');
     }
     const lineUserId = identity.identity.lineUserId;
 
-    // Per-user rate limit (after identity is established).
     const rl = rateLimit(`leave:${lineUserId}`, RATE_LIMIT, RATE_WINDOW_MS);
-    if (!rl.allowed) {
-      throw new RateLimitError('มีการส่งคำขอบ่อยเกินไป กรุณารอสักครู่');
-    }
+    if (!rl.allowed) throw new RateLimitError('มีการส่งคำขอบ่อยเกินไป กรุณารอสักครู่');
 
     // 2. Validate request details.
-    const validated = validateLeaveInput(body);
+    const validated = validateLeaveInput(parsed.fields);
     if (!validated.ok) {
       const { ValidationError } = await import('@/lib/errors');
       throw new ValidationError(validated.error);
@@ -67,7 +117,6 @@ export async function POST(req: Request): Promise<NextResponse> {
         verifiedLineUserIdMasked: maskId(lineUserId),
         employeeLookupResult: 'not_found',
       });
-      const { BusinessRuleError } = await import('@/lib/errors');
       throw new BusinessRuleError(
         'EMPLOYEE_NOT_LINKED',
         'บัญชี LINE นี้ยังไม่ได้เชื่อมกับข้อมูลพนักงาน กรุณาผูกบัญชีก่อนส่งคำขอลา',
@@ -75,62 +124,67 @@ export async function POST(req: Request): Promise<NextResponse> {
       );
     }
 
-    // 4. Idempotency: (employeeLineUserId + clientRequestId).
+    // 4. Idempotency: a duplicate never re-creates a row or re-saves a file.
     const existing = await leaveRepo.findByIdempotencyKey(lineUserId, input.clientRequestId);
     if (existing) {
       const r = existing.request;
-      const managerNotified = r.managerNotificationStatus === 'SENT';
       return ok(
         correlationId,
         'DUPLICATE_REQUEST',
         {
           requestId: r.requestId,
           status: r.status,
-          managerNotified,
-          retryable: !managerNotified,
+          managerNotified: r.managerNotificationStatus === 'SENT',
+          retryable: r.managerNotificationStatus !== 'SENT',
         },
         { message: 'คำขอนี้ถูกส่งไปแล้ว' },
       );
     }
 
-    // 5. Server-side leave-day calculation (never trust client totalDays).
+    // 5. Validate the OPTIONAL evidence up-front (before any row/file is created).
+    //    A missing file is always fine — evidence never gates the request.
+    let validatedEvidence: ValidatedEvidence | null = null;
+    if (parsed.evidence) {
+      const v = validateEvidence({
+        buffer: parsed.evidence.buffer,
+        fileName: parsed.evidence.fileName,
+        claimedMime: parsed.evidence.mime,
+        maxBytes,
+      });
+      if (!v.ok) {
+        throw new BusinessRuleError(v.code, evidenceErrorMessage(v.code), evidenceErrorStatus(v.code));
+      }
+      validatedEvidence = v.value;
+    }
+
+    // 6. Server-side leave-day calculation (never trust client totalDays).
     const holidays = await loadHolidays();
     const totalDays = computeLeaveDays(input.startDate, input.endDate, {
       countWeekends: env.leaveCountWeekends(),
       holidays,
     });
     if (totalDays < 1) {
-      const { BusinessRuleError } = await import('@/lib/errors');
       throw new BusinessRuleError('VALIDATION_ERROR', 'ช่วงวันที่เลือกไม่มีวันทำงานที่นับเป็นวันลา');
     }
 
-    // 6. Overlap check against active requests.
-    const overlap = await leaveRepo.findOverlapping(lineUserId, input.startDate, input.endDate);
+    // 7. Overlap check — only the SAME employee's own active requests block
+    //    (keyed by canonical employeeId / verified LINE id; never another person).
+    const overlap = await leaveRepo.findOverlapping(lineUserId, employee.employeeId, input.startDate, input.endDate);
     if (overlap) {
-      throw new ConflictError(
-        'มีคำขอลาในช่วงวันที่ดังกล่าวแล้ว',
-        'OVERLAPPING_LEAVE_REQUEST',
-        `overlaps ${overlap.requestId}`,
-      );
+      throw new ConflictError('มีคำขอลาในช่วงวันที่ดังกล่าวแล้ว', 'OVERLAPPING_LEAVE_REQUEST', `overlaps ${overlap.requestId}`);
     }
 
-    // 7. Balance check. Best-effort: an unknown leave type or a genuinely
-    //    insufficient balance is rejected, but a balance source that is
-    //    unavailable / not yet implemented must NOT block the request — it is
-    //    logged as a warning + audit entry and the request proceeds.
+    // 8. Balance check (best-effort).
     const balance = await assertSufficientBalance(lineUserId, input.leaveType, totalDays);
-    if (balance.checked === false && balance.skipped) {
+    const balanceWarning = balance.checked === false && balance.skipped;
+    if (balanceWarning) {
       logger.warn('leave_balance_check_skipped', {
-        correlationId,
-        route: ROUTE,
-        actorType: 'employee',
-        result: 'skipped',
-        code: balance.skipReason,
-        detail: `bucket=${balance.bucket} type=${input.leaveType}`,
+        correlationId, route: ROUTE, actorType: 'employee', result: 'skipped',
+        code: balance.skipReason, detail: `bucket=${balance.bucket} type=${input.leaveType}`,
       });
     }
 
-    // 8. Persist PENDING.
+    // 9. Persist the PENDING row (evidence NONE for now).
     const managerTarget = env.managerGroupId() || env.managerUserIds()[0] || '';
     const requestId = generateRequestId();
     const createdAt = nowIso();
@@ -149,13 +203,8 @@ export async function POST(req: Request): Promise<NextResponse> {
       reason: input.reason,
       managerLineUserId: employee.managerLineUserId || managerTarget,
       status: 'PENDING',
-      approvedBy: '',
-      approvedByLineUserId: '',
-      approvedAt: '',
-      rejectedBy: '',
-      rejectedByLineUserId: '',
-      rejectedAt: '',
-      rejectedReason: '',
+      approvedBy: '', approvedByLineUserId: '', approvedAt: '',
+      rejectedBy: '', rejectedByLineUserId: '', rejectedAt: '', rejectedReason: '',
       approvalSource: '',
       createdAt,
       updatedAt: createdAt,
@@ -167,58 +216,114 @@ export async function POST(req: Request): Promise<NextResponse> {
       employeeNotificationAttempts: 0,
       employeeNotificationLastAttemptAt: '',
       employeeNotificationError: '',
+      ...emptyEvidenceMetadata(),
     };
     await leaveRepo.create(record);
     await auditLog.append({
-      requestId,
-      action: 'CREATE',
-      actorLineUserId: lineUserId,
-      actorName: employee.name,
-      toStatus: 'PENDING',
-      detail: `${input.leaveType} ${input.startDate}..${input.endDate} (${totalDays}d)`,
+      requestId, action: 'CREATE', actorLineUserId: lineUserId, actorName: employee.name,
+      toStatus: 'PENDING', detail: `${input.leaveType} ${input.startDate}..${input.endDate} (${totalDays}d)`,
     });
-    if (balance.checked === false && balance.skipped) {
+    if (balanceWarning) {
       await auditLog.append({
-        requestId,
-        action: 'LEAVE_BALANCE_CHECK_SKIPPED',
-        actorLineUserId: lineUserId,
-        actorName: employee.name,
+        requestId, action: 'LEAVE_BALANCE_CHECK_SKIPPED', actorLineUserId: lineUserId, actorName: employee.name,
         detail: `reason=${balance.skipReason} bucket=${balance.bucket}`,
       });
     }
-    const balanceWarning = balance.checked === false && balance.skipped;
 
-    // 9. Notify manager and return the REAL result.
-    const notify = await sendManagerNotification(record, correlationId);
-    logger.info('leave_created', {
-      correlationId,
-      route: ROUTE,
-      leaveRequestId: requestId,
-      actorType: 'employee',
-      result: 'ok',
-      durationMs: Date.now() - startedAt,
-    });
-
-    if (notify.ok) {
-      return ok(
-        correlationId,
-        'LEAVE_REQUEST_CREATED',
-        { requestId, status: 'PENDING', managerNotified: true, balanceChecked: !balanceWarning },
-        { status: 201 },
-      );
+    // 10. Promote the evidence file (atomic) + write metadata. Failure here NEVER
+    //     fails the request — the row stays and is retryable (status UPLOAD_FAILED).
+    let evidenceMeta: EvidenceMetadata = emptyEvidenceMetadata();
+    if (validatedEvidence) {
+      evidenceMeta = await attachEvidence(requestId, employee.employeeId, validatedEvidence, correlationId);
+      await leaveRepo.setEvidenceMetadata(requestId, evidenceMeta);
     }
 
+    // 11. Notify manager (Flex reflects the evidence state) and return the result.
+    const recordForNotify: LeaveRequest = { ...record, ...evidenceMeta };
+    const notify = await sendManagerNotification(recordForNotify, correlationId);
+    logger.info('leave_created', {
+      correlationId, route: ROUTE, leaveRequestId: requestId, actorType: 'employee',
+      result: 'ok', durationMs: Date.now() - startedAt,
+    });
+
+    const data = {
+      requestId,
+      status: 'PENDING' as const,
+      managerNotified: notify.ok,
+      balanceChecked: !balanceWarning,
+      evidenceStatus: evidenceMeta.evidenceStatus,
+      ...(notify.ok ? {} : { retryable: true }),
+    };
+    if (notify.ok) {
+      return ok(correlationId, 'LEAVE_REQUEST_CREATED', data, { status: 201 });
+    }
     await auditLog.append({ requestId, action: 'NOTIFY_MANAGER_FAILED', detail: notify.error ?? '' });
-    return ok(
-      correlationId,
-      'LEAVE_REQUEST_CREATED_NOTIFY_FAILED',
-      { requestId, status: 'PENDING', managerNotified: false, retryable: true, balanceChecked: !balanceWarning },
-      {
-        status: 202,
-        message: 'บันทึกคำขอแล้ว แต่แจ้งเตือนหัวหน้าไม่สำเร็จ ระบบจะติดตามให้ภายหลัง',
-      },
-    );
+    return ok(correlationId, 'LEAVE_REQUEST_CREATED_NOTIFY_FAILED', data, {
+      status: 202,
+      message: 'บันทึกคำขอแล้ว แต่แจ้งเตือนหัวหน้าไม่สำเร็จ ระบบจะติดตามให้ภายหลัง',
+    });
   } catch (err) {
     return fail(err, correlationId, { route: ROUTE });
+  }
+}
+
+function evidenceErrorMessage(code: string): string {
+  switch (code) {
+    case 'EVIDENCE_TOO_LARGE':
+      return 'ไฟล์หลักฐานมีขนาดใหญ่เกิน 10 MB';
+    case 'UNSUPPORTED_EVIDENCE_TYPE':
+      return 'รองรับเฉพาะไฟล์ JPG, PNG, WEBP หรือ PDF เท่านั้น';
+    default:
+      return 'ไฟล์หลักฐานไม่ถูกต้อง กรุณาเลือกไฟล์ใหม่';
+  }
+}
+
+/**
+ * Save the validated evidence file and return the metadata to persist. Never
+ * throws (evidence is optional): on any storage/config problem it returns
+ * UPLOAD_FAILED metadata and audits — the request itself still succeeds.
+ */
+async function attachEvidence(
+  requestId: string,
+  employeeId: string,
+  ev: ValidatedEvidence,
+  correlationId: string,
+): Promise<EvidenceMetadata> {
+  const base: EvidenceMetadata = {
+    ...emptyEvidenceMetadata(),
+    evidenceOriginalFileName: ev.originalFileName,
+    evidenceMimeType: ev.mime,
+    evidenceSize: ev.size,
+    evidenceSha256: ev.sha256,
+  };
+  const dir = env.leaveEvidenceDir();
+  if (!dir || !isValidEvidenceEmployeeId(employeeId)) {
+    logger.warn('evidence_upload_failed', {
+      correlationId, route: ROUTE, leaveRequestId: requestId, result: 'error',
+      code: 'EVIDENCE_UPLOAD_FAILED', detail: !dir ? 'storage_not_configured' : 'employeeId_format',
+    });
+    await auditLog.append({ requestId, action: 'EVIDENCE_UPLOAD_FAILED', detail: !dir ? 'storage not configured' : 'employeeId format' });
+    return { ...base, evidenceStatus: 'UPLOAD_FAILED' };
+  }
+  try {
+    const saved = await saveEvidence({ root: dir, employeeId, requestId, bytes: ev.bytes, ext: ev.ext });
+    await auditLog.append({
+      requestId, action: 'EVIDENCE_ATTACHED',
+      detail: `${ev.mime} ${ev.size}B "${ev.originalFileName}"`, // sanitized name + size, never the path
+    });
+    return {
+      ...base,
+      evidenceStatus: 'AVAILABLE',
+      evidenceStoredFileName: saved.storedFileName,
+      evidenceRelativePath: saved.relativePath,
+      evidenceUploadedAt: nowIso(),
+    };
+  } catch (err) {
+    logger.warn('evidence_upload_failed', {
+      correlationId, route: ROUTE, leaveRequestId: requestId, result: 'error',
+      code: 'EVIDENCE_UPLOAD_FAILED', detail: err instanceof Error ? err.message.slice(0, 120) : 'error',
+    });
+    await auditLog.append({ requestId, action: 'EVIDENCE_UPLOAD_FAILED', detail: 'storage write failed' });
+    return { ...base, evidenceStatus: 'UPLOAD_FAILED' };
   }
 }

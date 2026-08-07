@@ -50,7 +50,32 @@ describe('attendance validation', () => {
     expect(r.ok).toBe(false);
   });
 
-  it('requires summary on check-out', () => {
+  // Bug 2: work summary is OPTIONAL on check-out — the default (checkout) path
+  // must accept an empty summary and a missing summary field without error.
+  it('accepts check-out with empty summary (default = optional)', () => {
+    const r = validateAttendanceInput({ lat: 13.7, lng: 100.5, time: '18:00:00', summary: '' });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.summary).toBeUndefined();
+  });
+
+  it('accepts check-out with no summary field at all', () => {
+    const r = validateAttendanceInput({ lat: 13.7, lng: 100.5, time: '18:00:00' });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.summary).toBeUndefined();
+  });
+
+  it('keeps the summary text when provided', () => {
+    const r = validateAttendanceInput({ lat: 13.7, lng: 100.5, time: '18:00:00', summary: '  ทำรายงาน  ' });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.summary).toBe('ทำรายงาน');
+  });
+
+  it('still caps an abnormally long summary', () => {
+    const r = validateAttendanceInput({ lat: 13.7, lng: 100.5, time: '18:00:00', summary: 'x'.repeat(2001) });
+    expect(r.ok).toBe(false);
+  });
+
+  it('the (now unused) requireSummary option still works for other callers', () => {
     const r = validateAttendanceInput({ lat: 13.7, lng: 100.5, time: '18:00:00' }, { requireSummary: true });
     expect(r.ok).toBe(false);
   });

@@ -49,6 +49,14 @@ function defaultRecord(): LeaveRequest {
     employeeNotificationAttempts: 0,
     employeeNotificationLastAttemptAt: '',
     employeeNotificationError: '',
+    evidenceStatus: 'NONE',
+    evidenceOriginalFileName: '',
+    evidenceStoredFileName: '',
+    evidenceRelativePath: '',
+    evidenceMimeType: '',
+    evidenceSize: 0,
+    evidenceUploadedAt: '',
+    evidenceSha256: '',
   };
 }
 
@@ -152,9 +160,33 @@ export function findByIdempotencyKey(
   );
 }
 
-/** Find any request for an employee that overlaps [startDate,endDate] and is active. */
+/** Canonical employee-id compare (trim + uppercase); '' never matches. */
+function sameEmployeeId(a: string, b: string): boolean {
+  const na = (a ?? '').trim().toUpperCase();
+  const nb = (b ?? '').trim().toUpperCase();
+  return na !== '' && na === nb;
+}
+
+/**
+ * Is `row` the SAME employee as the submitter? Matched by canonical employeeId
+ * (primary) OR verified LINE user id — a blank identity NEVER matches, so a
+ * different employee (or a legacy row with a blank id) can never block another
+ * person's leave. Identity is never compared by name.
+ */
+function isSameEmployeeRow(row: LeaveRequest, lineUserId: string, employeeId: string): boolean {
+  if (sameEmployeeId(row.employeeId, employeeId)) return true;
+  if (lineUserId && row.employeeLineUserId && row.employeeLineUserId === lineUserId) return true;
+  return false;
+}
+
+/**
+ * Find an ACTIVE request of the SAME employee whose date range overlaps
+ * [startDate,endDate]. Only the submitter's own PENDING/APPROVED requests block;
+ * REJECTED/CANCELLED never do. Other employees are never considered.
+ */
 export async function findOverlapping(
   employeeLineUserId: string,
+  employeeId: string,
   startDate: string,
   endDate: string,
   activeStatuses: LeaveStatus[] = ['PENDING', 'APPROVED'],
@@ -162,14 +194,15 @@ export async function findOverlapping(
   const { rows, headerIndex } = await readAll();
   const s = Date.parse(`${startDate}T00:00:00Z`);
   const e = Date.parse(`${endDate}T00:00:00Z`);
+  if (Number.isNaN(s) || Number.isNaN(e)) return null;
   for (const row of rows) {
     const r = fromRow(row, headerIndex);
-    if (r.employeeLineUserId !== employeeLineUserId) continue;
+    if (!isSameEmployeeRow(r, employeeLineUserId, employeeId)) continue;
     if (!activeStatuses.includes(r.status)) continue;
     const rs = Date.parse(`${r.startDate}T00:00:00Z`);
     const re = Date.parse(`${r.endDate}T00:00:00Z`);
     if (Number.isNaN(rs) || Number.isNaN(re)) continue;
-    if (s <= re && rs <= e) return r; // ranges intersect
+    if (s <= re && rs <= e) return r; // inclusive range intersection
   }
   return null;
 }
@@ -204,6 +237,12 @@ export async function listForEmployee(
     return ka < kb ? 1 : ka > kb ? -1 : 0;
   });
   return items;
+}
+
+/** Return every leave request (used by maintenance scripts). */
+export async function listAllRequests(): Promise<LeaveRequest[]> {
+  const { rows, headerIndex } = await readAll();
+  return rows.map((row) => fromRow(row, headerIndex));
 }
 
 /** Append a new leave request row. */
@@ -257,6 +296,16 @@ export async function transitionFromPending(
   const updated: LeaveRequest = { ...found.request, ...patch, updatedAt: nowIso() };
   await writeRow(found.rowNumber, updated, found.header);
   return { ok: true, request: updated };
+}
+
+/** Update only the evidence-metadata fields for a request. */
+export async function setEvidenceMetadata(
+  requestId: string,
+  meta: Partial<import('@/lib/evidence/types').EvidenceMetadata>,
+): Promise<void> {
+  const found = await findByRequestId(requestId);
+  if (!found) return;
+  await writeRow(found.rowNumber, { ...found.request, ...meta, updatedAt: nowIso() }, found.header);
 }
 
 /** Apply an arbitrary patch to a request by id (best-effort; no status guard). */

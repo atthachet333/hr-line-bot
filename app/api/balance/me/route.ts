@@ -4,6 +4,7 @@ import { bearerToken } from '@/lib/http/guards';
 import { fail } from '@/lib/http/respond';
 import { AuthenticationError, BusinessRuleError } from '@/lib/errors';
 import { logger } from '@/lib/logger';
+import { maskEmployeeId } from '@/lib/utils/mask';
 import { verifyIdentity } from '@/lib/line/identity';
 import { findByLineUserId } from '@/lib/repositories/employee-repository';
 import { computeBalanceSummary } from '@/lib/services/balance-summary-service';
@@ -17,9 +18,9 @@ const ROUTE = 'GET /api/balance/me';
  * Live leave-balance summary for the signed-in employee.
  *
  * Identity is derived ONLY from the verified LINE access token → Employees sheet
- * → employeeId. `used` is computed server-side from APPROVED LeaveRequests, and
- * entitlements come from the Balances sheet. No client-supplied id is trusted.
- * Always `no-store` so the tab reflects the latest state after an approval.
+ * → employeeId. Entitlements come from the Balances sheet (keyed by employeeId);
+ * `used` is computed from APPROVED LeaveRequests. No client-supplied id is
+ * trusted, and no fabricated 0 balance is returned. Always `no-store`.
  */
 export async function GET(req: Request): Promise<NextResponse> {
   const correlationId = correlationIdFrom(req);
@@ -43,16 +44,31 @@ export async function GET(req: Request): Promise<NextResponse> {
       );
     }
 
-    const balances = await computeBalanceSummary(lineUserId, employee.employeeId);
+    const outcome = await computeBalanceSummary(lineUserId, employee.employeeId);
 
-    logger.info('balance_summary', {
-      correlationId,
+    logger.info('balance_lookup', {
       route: ROUTE,
-      actorType: 'employee',
-      result: 'ok',
+      correlationId,
+      employeeIdMasked: maskEmployeeId(employee.employeeId),
+      balanceRowFound: outcome.meta.balanceRowFound,
+      entitlementFieldsFound: outcome.meta.entitlementFieldsFound,
+      approvedLeaveCount: outcome.meta.approvedLeaveCount,
+      result: outcome.ok ? 'ok' : 'error',
+      code: outcome.ok ? undefined : outcome.code,
     });
 
-    return noStore(NextResponse.json({ success: true, balances, correlationId }));
+    if (!outcome.ok) {
+      throw new BusinessRuleError(outcome.code, outcome.message, 422);
+    }
+
+    return noStore(
+      NextResponse.json({
+        success: true,
+        balances: outcome.summary,
+        source: { entitlement: 'Balances', used: 'LeaveRequests' },
+        correlationId,
+      }),
+    );
   } catch (err) {
     return noStore(fail(err, correlationId, { route: ROUTE }));
   }

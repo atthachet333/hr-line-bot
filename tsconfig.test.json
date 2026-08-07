@@ -1,0 +1,23 @@
+{
+  // Type-checking config for tests + tooling scripts, kept OUT of the production
+  // `next build` / `npm run typecheck` program so the app build stays within a
+  // small heap. Run separately with `npm run typecheck:test`.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "incremental": true,
+    "tsBuildInfoFile": "tsconfig.test.tsbuildinfo",
+    "types": ["node"]
+  },
+  "include": [
+    "next-env.d.ts",
+    "app/**/*.ts",
+    "app/**/*.tsx",
+    "lib/**/*.ts",
+    "lib/**/*.tsx",
+    "src/**/*.ts",
+    "tests/**/*.ts",
+    "scripts/**/*.ts",
+    "vitest.config.ts"
+  ],
+  "exclude": ["node_modules", ".next", "coverage"]
+}

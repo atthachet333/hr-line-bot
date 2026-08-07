@@ -1,7 +1,9 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
-import liff from '@line/liff';
+import { useState, useEffect, useCallback } from 'react';
+import { initializeLiffSession, LiffAuthError } from '@/lib/liff/session';
+import { authenticatedFetch } from '@/lib/liff/authenticated-fetch';
+import { liffErrorMessage } from '@/lib/liff/error-messages';
 
 interface HistoryItem {
   requestId: string;
@@ -18,6 +20,7 @@ interface HistoryItem {
   rejectedBy: string;
   rejectedAt: string;
   rejectedReason: string;
+  hasEvidence?: boolean;
 }
 
 const STATUS_META: Record<HistoryItem['status'], { label: string; className: string }> = {
@@ -74,26 +77,18 @@ export default function LeaveBalancePage() {
   const [balanceError, setBalanceError] = useState('');
   const [ready, setReady] = useState(false);
 
-  const accessTokenRef = useRef<string | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState('');
   const [historyLoaded, setHistoryLoaded] = useState(false);
 
+  // All API calls go through authenticatedFetch: fresh token every time, one
+  // automatic re-init + retry on a 401, cache:no-store. No token is kept here.
   const loadBalance = useCallback(async () => {
-    const token = accessTokenRef.current;
-    if (!token) {
-      setBalanceError('ไม่สามารถยืนยันตัวตนได้ กรุณาเปิดหน้านี้จากแอป LINE');
-      return;
-    }
     setBalanceLoading(true);
     setBalanceError('');
     try {
-      const res = await fetch('/api/balance/me', {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${token}` },
-        cache: 'no-store',
-      });
+      const res = await authenticatedFetch('balance', '/api/balance/me');
       const result = await res.json().catch(() => ({}));
       if (res.ok && result.success && result.balances) {
         setBalances(
@@ -106,76 +101,73 @@ export default function LeaveBalancePage() {
           })),
         );
       } else if (res.status === 401) {
-        setBalanceError('ไม่สามารถยืนยันตัวตนได้ กรุณาเปิดหน้านี้จากแอป LINE อีกครั้ง');
-      } else if (result.code === 'EMPLOYEE_NOT_LINKED') {
-        setBalanceError('ยังไม่พบการผูกบัญชีพนักงานของคุณ กรุณาติดต่อฝ่ายบุคคล');
-      } else if (result.code === 'BALANCE_NOT_CONFIGURED') {
-        setBalanceError('ยังไม่ได้ตั้งค่าสิทธิ์วันลาของคุณ กรุณาติดต่อฝ่ายบุคคล');
+        setBalanceError(liffErrorMessage('AUTHENTICATION_ERROR'));
+      } else if (result.code && result.code in { EMPLOYEE_NOT_LINKED: 1, BALANCE_NOT_CONFIGURED: 1, BALANCE_DATA_INVALID: 1 }) {
+        setBalanceError(liffErrorMessage(result.code, result.message));
       } else {
         setBalanceError(result.message || 'ไม่สามารถโหลดยอดวันลาได้ กรุณาลองใหม่');
       }
-    } catch {
-      setBalanceError('ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้ กรุณาลองใหม่');
+    } catch (err) {
+      if (err instanceof LiffAuthError) setBalanceError(liffErrorMessage(err.code));
+      else setBalanceError('ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้ กรุณาลองใหม่');
     } finally {
       setBalanceLoading(false);
     }
   }, []);
 
   const loadHistory = useCallback(async () => {
-    const token = accessTokenRef.current;
-    if (!token) {
-      setHistoryError('ไม่สามารถยืนยันตัวตนได้ กรุณาเปิดหน้านี้จากแอป LINE');
-      return;
-    }
     setHistoryLoading(true);
     setHistoryError('');
     try {
-      const res = await fetch('/api/leave/history', {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${token}` },
-        cache: 'no-store',
-      });
+      const res = await authenticatedFetch('balance', '/api/leave/history');
       const result = await res.json().catch(() => ({}));
       if (res.ok && result.success) {
         setHistory(Array.isArray(result.items) ? result.items : []);
         setHistoryLoaded(true);
       } else if (res.status === 401) {
-        setHistoryError('ไม่สามารถยืนยันตัวตนได้ กรุณาเปิดหน้านี้จากแอป LINE อีกครั้ง');
+        setHistoryError(liffErrorMessage('AUTHENTICATION_ERROR'));
       } else if (result.code === 'EMPLOYEE_NOT_LINKED') {
-        setHistoryError('ยังไม่พบการผูกบัญชีพนักงานของคุณ กรุณาติดต่อฝ่ายบุคคล');
+        setHistoryError(liffErrorMessage('EMPLOYEE_NOT_LINKED'));
       } else {
         setHistoryError(result.message || 'ไม่สามารถโหลดประวัติการลาได้ กรุณาลองใหม่');
       }
-    } catch {
-      setHistoryError('ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้ กรุณาลองใหม่');
+    } catch (err) {
+      if (err instanceof LiffAuthError) setHistoryError(liffErrorMessage(err.code));
+      else setHistoryError('ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้ กรุณาลองใหม่');
     } finally {
       setHistoryLoading(false);
     }
   }, []);
 
-  useEffect(() => {
-    const init = async () => {
-      try {
-        await liff.init({ liffId: process.env.NEXT_PUBLIC_LIFF_ID_BALANCE as string });
-        if (!liff.isLoggedIn()) {
-          liff.login();
-          return;
-        }
-        accessTokenRef.current = liff.getAccessToken();
-        setReady(true);
-        await loadBalance();
-      } catch {
-        setBalanceError('ไม่สามารถเริ่มต้น LINE ได้ กรุณาเปิดหน้านี้จากแอป LINE');
-      }
-    };
-    init();
+  // Initialise the LIFF session once, then load. The retry button re-runs this
+  // so it always starts from a fresh token (never a stale one).
+  const initSession = useCallback(async () => {
+    setBalanceLoading(true);
+    setBalanceError('');
+    const session = await initializeLiffSession('balance');
+    if (session.status === 'redirecting') return; // liff.login() navigates away
+    if (session.status === 'error') {
+      setBalanceError(liffErrorMessage(session.code));
+      setBalanceLoading(false);
+      return;
+    }
+    setReady(true);
+    await loadBalance();
   }, [loadBalance]);
+
+  useEffect(() => {
+    // Defer out of the render-commit phase so the initial setState isn't treated
+    // as a synchronous set-state-in-effect.
+    const id = setTimeout(() => void initSession(), 0);
+    return () => clearTimeout(id);
+  }, [initSession]);
 
   // Refresh on every tab open so the latest state shows after an approval
   // (no stale cache; nothing is persisted in localStorage).
   const openBalance = () => {
     setActiveTab('balance');
     if (ready) void loadBalance();
+    else void initSession();
   };
   const openHistory = () => {
     setActiveTab('history');
@@ -207,34 +199,44 @@ export default function LeaveBalancePage() {
                   balanceLoading ? (
                     <div className="flex flex-col items-center justify-center py-16 animate-fade-in">
                       <div className="w-10 h-10 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin mb-4"></div>
-                      <div className="text-gray-500 font-medium">กำลังโหลดข้อมูล...</div>
+                      <div className="text-gray-500 font-medium">{ready ? 'กำลังโหลดข้อมูล...' : 'กำลังตรวจสอบบัญชี LINE...'}</div>
                     </div>
                   ) : balanceError ? (
                     <div className="text-center py-12 bg-white rounded-2xl border border-gray-100 shadow-sm mt-4">
                       <div className="text-4xl mb-3 opacity-70">⚠️</div>
                       <h3 className="text-gray-900 font-bold mb-1">ไม่สามารถแสดงยอดวันลาได้</h3>
                       <p className="text-sm text-gray-500 mb-5 px-6">{balanceError}</p>
-                      <button onClick={() => void loadBalance()} className="px-6 py-2.5 bg-blue-600 text-white rounded-xl font-semibold text-sm hover:bg-blue-700 transition-colors">
+                      <button onClick={() => void initSession()} className="px-6 py-2.5 bg-blue-600 text-white rounded-xl font-semibold text-sm hover:bg-blue-700 transition-colors">
                         ลองใหม่
                       </button>
                     </div>
                   ) : (
                     <div className="space-y-4 animate-fade-in">
-                      {balances.map((item, index) => (
-                        <div key={index} className="bg-white p-5 rounded-2xl border border-gray-100 shadow-sm flex items-center justify-between">
-                          <div className="flex items-center gap-4">
-                            <div className="w-12 h-12 rounded-full flex items-center justify-center text-2xl bg-blue-50 shadow-inner">{item.icon}</div>
-                            <div>
-                              <h3 className="font-bold text-gray-900">{item.type}</h3>
-                              <p className="text-xs text-gray-500">ใช้ไปแล้ว {item.used} / {item.entitlement} วัน</p>
+                      {balances.map((item, index) => {
+                        const overUsed = item.used > item.entitlement;
+                        return (
+                          <div key={index} className={`bg-white p-5 rounded-2xl border shadow-sm ${overUsed ? 'border-red-200' : 'border-gray-100'}`}>
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-4">
+                                <div className="w-12 h-12 rounded-full flex items-center justify-center text-2xl bg-blue-50 shadow-inner">{item.icon}</div>
+                                <div>
+                                  <h3 className="font-bold text-gray-900">{item.type}</h3>
+                                  <p className="text-xs text-gray-500">ใช้ไปแล้ว {item.used} / {item.entitlement} วัน</p>
+                                </div>
+                              </div>
+                              <div className="text-right">
+                                <span className={`text-2xl font-bold ${overUsed ? 'text-red-600' : 'text-blue-600'}`}>{item.remaining}</span>
+                                <span className="text-xs text-gray-400 block mt-0.5">คงเหลือ</span>
+                              </div>
                             </div>
+                            {overUsed && (
+                              <p className="mt-3 text-xs font-semibold text-red-600 bg-red-50 rounded-lg px-3 py-2">
+                                ⚠️ ใช้วันลาเกินสิทธิ์ที่กำหนด ({item.used} / {item.entitlement} วัน)
+                              </p>
+                            )}
                           </div>
-                          <div className="text-right">
-                            <span className="text-2xl font-bold text-blue-600">{item.remaining}</span>
-                            <span className="text-xs text-gray-400 block mt-0.5">คงเหลือ</span>
-                          </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )
                 )}
@@ -281,6 +283,7 @@ export default function LeaveBalancePage() {
                               <div className="flex justify-between"><span className="text-gray-400">จำนวนวัน</span><span className="font-medium text-gray-800">{item.totalDays} วัน</span></div>
                               <div className="flex justify-between gap-4"><span className="text-gray-400 shrink-0">เหตุผล</span><span className="font-medium text-gray-800 text-right break-words">{item.reason || '-'}</span></div>
                               <div className="flex justify-between"><span className="text-gray-400">วันที่ยื่น</span><span className="font-medium text-gray-800">{fmtDateTime(item.createdAt)}</span></div>
+                              <div className="flex justify-between"><span className="text-gray-400">หลักฐาน</span><span className="font-medium text-gray-800">{item.hasEvidence ? '📎 มีหลักฐานแนบ' : 'ไม่มีหลักฐานแนบ'}</span></div>
 
                               {item.status === 'APPROVED' && (
                                 <>

@@ -1,6 +1,6 @@
 import type { NextResponse } from 'next/server';
 import { correlationIdFrom } from '@/lib/utils/correlation';
-import { readJsonBody } from '@/lib/http/guards';
+import { readJsonBody, bearerToken } from '@/lib/http/guards';
 import { ok, fail } from '@/lib/http/respond';
 import { rateLimit } from '@/lib/rate-limit';
 import {
@@ -13,7 +13,10 @@ import {
 import { verifyIdentity } from '@/lib/line/identity';
 import { validateAttendanceInput } from '@/lib/validation/attendance';
 import { findByLineUserId } from '@/lib/repositories/employee-repository';
-import { callAppsScriptEnvelope } from '@/lib/google-apps-script/client';
+import { recordAttendance } from '@/lib/attendance/attendance-repository';
+import { businessDateThailand } from '@/lib/utils/datetime';
+import { logger } from '@/lib/logger';
+import { maskId } from '@/lib/utils/mask';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -27,7 +30,7 @@ export async function POST(req: Request): Promise<NextResponse> {
 
     const identity = await verifyIdentity({
       idToken: typeof body.idToken === 'string' ? body.idToken : undefined,
-      accessToken: typeof body.accessToken === 'string' ? body.accessToken : undefined,
+      accessToken: (typeof body.accessToken === 'string' ? body.accessToken : undefined) ?? bearerToken(req),
     });
     if (!identity.ok) {
       throw new AuthenticationError('ไม่สามารถยืนยันตัวตนได้ กรุณาเปิดจากแอป LINE อีกครั้ง');
@@ -37,19 +40,22 @@ export async function POST(req: Request): Promise<NextResponse> {
     const rl = rateLimit(`checkout:${lineUserId}`, 10, 60_000);
     if (!rl.allowed) throw new RateLimitError('ดำเนินการบ่อยเกินไป กรุณารอสักครู่');
 
-    const validated = validateAttendanceInput(body, { requireSummary: true });
+    // Work summary is OPTIONAL — an empty summary must never fail check-out.
+    const validated = validateAttendanceInput(body);
     if (!validated.ok) throw new ValidationError(validated.error);
     const { lat, lng, time, summary } = validated.value;
 
     const clientRequestId = typeof body.clientRequestId === 'string' ? body.clientRequestId.slice(0, 100) : '';
     const employee = await findByLineUserId(lineUserId);
     const displayName = employee?.name || identity.identity.displayName || 'พนักงาน';
+    const businessDate = businessDateThailand();
 
-    const result = await callAppsScriptEnvelope({
-      action: 'checkout',
-      userId: lineUserId,
+    const result = await recordAttendance({
+      type: 'checkout',
+      lineUserId,
+      employeeId: employee?.employeeId ?? '',
       displayName,
-      empId: employee?.employeeId ?? '',
+      businessDate,
       time,
       lat,
       lng,
@@ -57,16 +63,25 @@ export async function POST(req: Request): Promise<NextResponse> {
       clientRequestId,
     });
 
+    logger.info('attendance_lookup', {
+      route: ROUTE, correlationId, event: 'checkout',
+      businessDate: result.diag.businessDate,
+      employeeResolved: result.diag.employeeResolved,
+      candidateCount: result.diag.candidateCount,
+      openCheckinFound: result.diag.openCheckinFound,
+      reason: result.diag.reason,
+      actorUserIdMasked: maskId(lineUserId),
+      result: result.ok ? 'ok' : 'error',
+    });
+
     if (!result.ok) {
-      throw new ExternalServiceError('บันทึกเวลาออกงานไม่สำเร็จ กรุณาลองใหม่อีกครั้ง', `${result.kind}: ${result.error}`);
-    }
-    if (!result.envelope.success) {
-      throw new ConflictError(result.envelope.message || 'ไม่สามารถบันทึกเวลาออกงานได้', 'CONFLICT', result.envelope.code);
+      if (result.kind === 'conflict') {
+        throw new ConflictError(result.message, 'CONFLICT', result.code);
+      }
+      throw new ExternalServiceError('บันทึกเวลาออกงานไม่สำเร็จ กรุณาลองใหม่อีกครั้ง', `${result.kind}: ${result.code}`);
     }
 
-    return ok(correlationId, result.envelope.code || 'CHECK_OUT_RECORDED', result.envelope.data, {
-      message: result.envelope.message ?? 'บันทึกเวลาออกงานสำเร็จ',
-    });
+    return ok(correlationId, result.code, result.data, { message: result.message });
   } catch (err) {
     return fail(err, correlationId, { route: ROUTE });
   }

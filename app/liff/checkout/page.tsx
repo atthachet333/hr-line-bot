@@ -3,6 +3,9 @@
 import { useEffect, useState } from 'react';
 import liff from '@line/liff';
 import { useMounted } from '@/lib/hooks/use-mounted';
+import { initializeLiffSession, LiffAuthError } from '@/lib/liff/session';
+import { authenticatedFetch } from '@/lib/liff/authenticated-fetch';
+import { liffErrorMessage } from '@/lib/liff/error-messages';
 
 export default function CheckOutPage() {
   const isMounted = useMounted();
@@ -30,13 +33,18 @@ export default function CheckOutPage() {
     const timer = setInterval(tick, 1000); 
 
     const initLiff = async () => {
+      const session = await initializeLiffSession('checkout');
+      if (session.status === 'redirecting') return;
+      if (session.status === 'error') {
+        setErrorMsg(liffErrorMessage(session.code));
+        return;
+      }
       try {
-        await liff.init({ liffId: process.env.NEXT_PUBLIC_LIFF_ID_CHECKOUT || '' });
-        if (liff.isLoggedIn()) {
-          const profile = await liff.getProfile();
-          setDisplayName(profile.displayName);
-        } else { liff.login(); }
-      } catch (err) { console.error(err); }
+        const profile = await liff.getProfile();
+        setDisplayName(profile.displayName);
+      } catch {
+        /* name is cosmetic — the server re-derives identity from the token */
+      }
     };
     initLiff();
 
@@ -57,43 +65,35 @@ export default function CheckOutPage() {
   const handleCheckOut = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!location) return alert("กรุณากดดึงพิกัด GPS ก่อนครับ");
-    if (!summary.trim()) return alert("กรุณาระบุสรุปงานประจำวันด้วยครับ");
     if (isSubmitting) return; // กันกดซ้ำระหว่างส่ง
 
     setErrorMsg('');
     setIsSubmitting(true);
 
     try {
-      const idToken = liff.getIDToken();
-      const accessToken = liff.getAccessToken();
-      if (!idToken && !accessToken) {
-        setErrorMsg('ไม่สามารถยืนยันตัวตนได้ กรุณาเปิดหน้านี้จากแอป LINE');
-        setIsSubmitting(false);
-        return;
-      }
-
-      const res = await fetch('/api/attendance/check-out', {
+      const res = await authenticatedFetch('checkout', '/api/attendance/check-out', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          idToken,
-          accessToken,
           clientRequestId,
           time: timeText,
           lat: location.lat,
           lng: location.lng,
           summary,
-        })
+        }),
       });
 
       const result = await res.json().catch(() => ({}));
       if (res.ok && result.success) {
         setShowPopup(true); // โชว์ Popup เมื่อบันทึกจริงสำเร็จเท่านั้น
+      } else if (res.status === 401) {
+        setErrorMsg(liffErrorMessage('AUTHENTICATION_ERROR'));
       } else {
         setErrorMsg(result.message || result.error || 'บันทึกเวลาออกงานไม่สำเร็จ กรุณาลองใหม่');
       }
-    } catch {
-      setErrorMsg('ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้ กรุณาลองใหม่');
+    } catch (err) {
+      if (err instanceof LiffAuthError) setErrorMsg(liffErrorMessage(err.code));
+      else setErrorMsg('ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้ กรุณาลองใหม่');
     } finally {
       setIsSubmitting(false);
     }
@@ -134,8 +134,8 @@ export default function CheckOutPage() {
             </div>
 
             <div>
-              <label className="block text-sm font-semibold text-gray-900 mb-2">สรุปงานประจำวัน</label>
-              <textarea value={summary} onChange={(e) => setSummary(e.target.value)} className="w-full px-4 py-3 bg-white border-2 border-gray-200 rounded-xl focus:outline-none focus:border-gray-900 text-base h-28 resize-none" placeholder="วันนี้ทำอะไรไปบ้าง..." required></textarea>
+              <label className="block text-sm font-semibold text-gray-900 mb-2">สรุปงานวันนี้ (ไม่บังคับ)</label>
+              <textarea value={summary} onChange={(e) => setSummary(e.target.value)} maxLength={2000} className="w-full px-4 py-3 bg-white border-2 border-gray-200 rounded-xl focus:outline-none focus:border-gray-900 text-base h-28 resize-none" placeholder="สรุปงานวันนี้ (ถ้ามี)..."></textarea>
             </div>
             
             {errorMsg && (
@@ -144,7 +144,7 @@ export default function CheckOutPage() {
               </div>
             )}
 
-            <button type="submit" className={`w-full py-4 rounded-xl font-bold text-lg transition-colors shadow-lg ${location && summary.trim() && !isSubmitting ? 'bg-gray-900 text-white hover:bg-black' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`} disabled={!location || !summary.trim() || isSubmitting}>{isSubmitting ? 'กำลังบันทึก...' : 'ยืนยันออกงาน'}</button>
+            <button type="submit" className={`w-full py-4 rounded-xl font-bold text-lg transition-colors shadow-lg ${location && !isSubmitting ? 'bg-gray-900 text-white hover:bg-black' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`} disabled={!location || isSubmitting}>{isSubmitting ? 'กำลังบันทึก...' : 'ยืนยันออกงาน'}</button>
           </form>
 
           {showPopup && (

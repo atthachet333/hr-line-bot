@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { emptyEvidenceMetadata } from '@/lib/evidence/types';
 import type { Employee } from '@/lib/repositories/employee-repository';
 import type { LeaveRequest } from '@/lib/domain/leave-request';
 
@@ -62,6 +63,7 @@ function base(overrides: Partial<LeaveRequest>): LeaveRequest {
     employeeNotificationAttempts: 0,
     employeeNotificationLastAttemptAt: '',
     employeeNotificationError: '',
+    ...emptyEvidenceMetadata(),
     ...overrides,
   };
 }

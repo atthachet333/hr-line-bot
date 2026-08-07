@@ -38,6 +38,8 @@ function toHistoryItem(r: LeaveRequest) {
     rejectedBy: r.rejectedBy,
     rejectedAt: r.rejectedAt,
     rejectedReason: r.rejectedReason,
+    // Evidence indicator only — never the stored path.
+    hasEvidence: r.evidenceStatus === 'AVAILABLE',
   };
 }
 

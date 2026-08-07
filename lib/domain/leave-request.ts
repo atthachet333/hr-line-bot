@@ -1,5 +1,7 @@
 /** Domain model for a leave request. Shared by repositories, routes and views. */
 
+import type { EvidenceStatus } from '@/lib/evidence/types';
+
 export const LEAVE_STATUS = ['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED'] as const;
 export type LeaveStatus = (typeof LEAVE_STATUS)[number];
 
@@ -53,6 +55,16 @@ export interface LeaveRequest {
   employeeNotificationAttempts: number;
   employeeNotificationLastAttemptAt: string;
   employeeNotificationError: string;
+
+  // ---- Optional evidence attachment (never binary/base64/absolute path) ----
+  evidenceStatus: EvidenceStatus;
+  evidenceOriginalFileName: string;
+  evidenceStoredFileName: string;
+  evidenceRelativePath: string;
+  evidenceMimeType: string;
+  evidenceSize: number;
+  evidenceUploadedAt: string;
+  evidenceSha256: string;
 }
 
 /** Canonical column order for the LeaveRequests sheet (header row). */
@@ -89,11 +101,37 @@ export const LEAVE_REQUEST_COLUMNS: (keyof LeaveRequest)[] = [
   'employeeNotificationAttempts',
   'employeeNotificationLastAttemptAt',
   'employeeNotificationError',
+  'evidenceStatus',
+  'evidenceOriginalFileName',
+  'evidenceStoredFileName',
+  'evidenceRelativePath',
+  'evidenceMimeType',
+  'evidenceSize',
+  'evidenceUploadedAt',
+  'evidenceSha256',
 ];
+
+/** Evidence columns (added by migration; the sheet may not have them yet). */
+export const LEAVE_REQUEST_EVIDENCE_COLUMNS: (keyof LeaveRequest)[] = [
+  'evidenceStatus',
+  'evidenceOriginalFileName',
+  'evidenceStoredFileName',
+  'evidenceRelativePath',
+  'evidenceMimeType',
+  'evidenceSize',
+  'evidenceUploadedAt',
+  'evidenceSha256',
+];
+
+/** Core columns required for the sheet to be considered valid (evidence is optional). */
+export const LEAVE_REQUEST_CORE_COLUMNS: (keyof LeaveRequest)[] = LEAVE_REQUEST_COLUMNS.filter(
+  (c) => !(LEAVE_REQUEST_EVIDENCE_COLUMNS as string[]).includes(c),
+);
 
 /** Field keys that hold numeric values (used by the repository row mapper). */
 export const LEAVE_REQUEST_NUMERIC_FIELDS: (keyof LeaveRequest)[] = [
   'totalDays',
   'managerNotificationAttempts',
   'employeeNotificationAttempts',
+  'evidenceSize',
 ];

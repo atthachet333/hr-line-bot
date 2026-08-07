@@ -84,10 +84,23 @@ export const env = {
     auditLog: () => optional('SHEET_AUDIT_LOG', 'AuditLog'),
     holidays: () => optional('SHEET_HOLIDAYS', 'Holidays'),
     balances: () => optional('SHEET_BALANCES', 'Balances'),
+    attendance: () => optional('SHEET_ATTENDANCE', 'Attendance'),
   },
 
   // ---- Leave rules ----
   leaveCountWeekends: () => optional('LEAVE_COUNT_WEEKENDS', 'false') === 'true',
+
+  // ---- Leave evidence (optional file attachment) ----
+  /** Storage root for evidence files. MUST be outside the repo (e.g. C:\S2A_DATA\...). */
+  leaveEvidenceDir: () => optional('LEAVE_EVIDENCE_DIR'),
+  leaveEvidenceMaxBytes: () => {
+    const n = parseInt(optional('LEAVE_EVIDENCE_MAX_BYTES', '10485760'), 10);
+    return Number.isFinite(n) && n > 0 ? n : 10_485_760;
+  },
+  leaveEvidenceRetentionDays: () => {
+    const n = parseInt(optional('LEAVE_EVIDENCE_RETENTION_DAYS', '365'), 10);
+    return Number.isFinite(n) && n > 0 ? n : 365;
+  },
 
   /**
    * Enables the manager-bot `whoami` helper (direct chat only) so an approver can
@@ -244,6 +257,36 @@ export function validateEnvironment(
   const parsedPublic = publicEnvSchema.safeParse(process.env);
   if (!parsedPublic.success) {
     warnings.push('รูปแบบ NEXT_PUBLIC_LIFF_ID ไม่ถูกต้อง');
+  }
+
+  // LIFF ids: each page must have one, all must belong to the SAME LINE Login
+  // channel (same numeric prefix), and match EMPLOYEE_LINE_LOGIN_CHANNEL_ID when
+  // set. Never echo full LIFF ids (only the channel prefix / page name).
+  const liffByPage: Record<string, string | undefined> = {
+    checkin: process.env.NEXT_PUBLIC_LIFF_ID_CHECKIN,
+    checkout: process.env.NEXT_PUBLIC_LIFF_ID_CHECKOUT,
+    leave: process.env.NEXT_PUBLIC_LIFF_ID_LEAVE || process.env.NEXT_PUBLIC_LIFF_ID,
+    balance: process.env.NEXT_PUBLIC_LIFF_ID_BALANCE,
+  };
+  const missingLiff = Object.entries(liffByPage)
+    .filter(([, v]) => !v || v.trim() === '')
+    .map(([k]) => k);
+  if (missingLiff.length > 0) {
+    (requireSecrets ? errors : warnings).push(`ขาดค่า LIFF ID ของหน้า: ${missingLiff.join(', ')}`);
+  }
+  const prefixOf = (id: string) => id.split('-')[0];
+  const presentPrefixes = Object.values(liffByPage)
+    .filter((v): v is string => !!v && v.trim() !== '')
+    .map(prefixOf);
+  const uniquePrefixes = Array.from(new Set(presentPrefixes));
+  if (uniquePrefixes.length > 1) {
+    errors.push(`NEXT_PUBLIC_LIFF_ID_* อยู่คนละ LINE Login channel (prefix: ${uniquePrefixes.join(', ')})`);
+  }
+  const loginChannel = process.env.EMPLOYEE_LINE_LOGIN_CHANNEL_ID?.trim();
+  if (loginChannel && uniquePrefixes.length === 1 && uniquePrefixes[0] !== loginChannel) {
+    errors.push(
+      `LIFF channel prefix (${uniquePrefixes[0]}) ไม่ตรงกับ EMPLOYEE_LINE_LOGIN_CHANNEL_ID (${loginChannel})`,
+    );
   }
 
   return { ok: errors.length === 0, errors, warnings };
