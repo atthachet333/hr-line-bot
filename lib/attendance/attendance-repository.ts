@@ -19,8 +19,10 @@
  */
 import { env } from '@/lib/env';
 import { getSheetsClient } from '@/lib/sheets/client';
-import { nowIso } from '@/lib/utils/datetime';
+import { nowIso, sheetDateToYmd } from '@/lib/utils/datetime';
 import {
+  buildAttendanceHistory,
+  type AttendanceHistoryItem,
   type AttendanceRow,
   type AttendanceType,
   type DayAttendance,
@@ -28,14 +30,16 @@ import {
   evaluateCheckin,
   evaluateCheckout,
   findByClientRequestId,
+  rowMatchesEmployee,
   summarizeDay,
 } from '@/lib/attendance/attendance-core';
 
 /** Canonical header used when the sheet is empty / has no header yet. */
 const DEFAULT_HEADER = [
   'timestamp', 'date', 'userId', 'displayName', 'type',
-  'time', 'lat', 'lng', 'summary', 'clientRequestId', 'empId',
+  'time', 'lat', 'lng', 'summary', 'clientRequestId', 'empId', 'employmentType', 'workHours',
 ] as const;
+const REQUIRED_COLUMNS = ['empId', 'employmentType', 'workHours'] as const;
 
 export interface RecordAttendanceInput {
   type: AttendanceType;
@@ -48,6 +52,7 @@ export interface RecordAttendanceInput {
   lng: number;
   summary?: string;
   clientRequestId?: string;
+  employmentType?: string;
 }
 
 /** Non-sensitive diagnostics for structured logging (no ids/tokens). */
@@ -100,6 +105,9 @@ async function loadTable(sheetName: string): Promise<Table | null> {
   const iEmp = col('empId');
   const iType = col('type');
   const iCrid = col('clientRequestId');
+  const iTime = col('time');
+  const iEmploymentType = col('employmentType');
+  const iWorkHours = col('workHours');
 
   const rows: AttendanceRow[] = [];
   for (let r = 1; r < values.length; r++) {
@@ -110,9 +118,43 @@ async function loadTable(sheetName: string): Promise<Table | null> {
       empId: iEmp === -1 ? '' : String(row[iEmp] ?? ''),
       type: iType === -1 ? '' : String(row[iType] ?? ''),
       clientRequestId: iCrid === -1 ? '' : String(row[iCrid] ?? ''),
+      time: iTime === -1 ? '' : String(row[iTime] ?? ''),
+      employmentType: iEmploymentType === -1 ? '' : String(row[iEmploymentType] ?? ''),
+      workHours: iWorkHours === -1 ? '' : String(row[iWorkHours] ?? ''),
     });
   }
   return { header, col, rows };
+}
+
+async function ensureAttendanceColumns(table: Table, sheetName: string): Promise<string[]> {
+  const header = table.header.length ? [...table.header] : [...DEFAULT_HEADER];
+  for (const required of REQUIRED_COLUMNS) if (!header.includes(required)) header.push(required);
+  // Nothing to migrate — existing header already has every required column.
+  if (table.header.length === header.length && table.header.length > 0) return header;
+  // Best-effort header migration. If the write fails we fall back to whatever
+  // header the sheet already has so the row append still succeeds positionally.
+  try {
+    await ensureSheet(sheetName);
+    const { sheets, spreadsheetId } = await getSheetsClient();
+    await sheets.spreadsheets.values.update({
+      spreadsheetId, range: `${sheetName}!A1`, valueInputOption: 'RAW',
+      requestBody: { values: [header] },
+    });
+    return header;
+  } catch {
+    return table.header.length ? table.header : header;
+  }
+}
+
+function workHoursBetween(checkin: unknown, checkout: unknown): string {
+  const minutes = (value: unknown): number | null => {
+    const m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(String(value ?? '').trim());
+    if (!m) return null;
+    const result = Number(m[1]) * 60 + Number(m[2]) + Number(m[3] ?? 0) / 60;
+    return Number(m[1]) < 24 && Number(m[2]) < 60 && Number(m[3] ?? 0) < 60 ? result : null;
+  };
+  const start = minutes(checkin); const end = minutes(checkout);
+  return start !== null && end !== null && end >= start ? String(Number(((end - start) / 60).toFixed(4))) : '';
 }
 
 /** Ensure the tab exists; ignore the error when it already does. */
@@ -207,17 +249,11 @@ export function recordAttendance(input: RecordAttendanceInput): Promise<RecordAt
       }
 
       // Append the event. Header is created (with empId) only when the tab is empty.
-      const header = table.header.length > 0 ? table.header : [...DEFAULT_HEADER];
+      const header = await ensureAttendanceColumns(table, sheetName);
       const { sheets, spreadsheetId } = await getSheetsClient();
-      if (table.header.length === 0) {
-        await ensureSheet(sheetName);
-        await sheets.spreadsheets.values.append({
-          spreadsheetId,
-          range: `${sheetName}!A1`,
-          valueInputOption: 'RAW',
-          requestBody: { values: [header] },
-        });
-      }
+      const checkinRow = input.type === 'checkout'
+        ? table.rows.find((row) => rowMatchesEmployee(row, key) && sheetDateToYmd(row.date) === input.businessDate && String(row.type).toLowerCase() === 'checkin')
+        : undefined;
 
       const rowValues = buildRow(header, {
         timestamp: nowIso(),
@@ -231,6 +267,8 @@ export function recordAttendance(input: RecordAttendanceInput): Promise<RecordAt
         summary: input.summary ?? '',
         clientRequestId: input.clientRequestId ?? '',
         empId: input.employeeId,
+        employmentType: input.employmentType ?? '',
+        workHours: input.type === 'checkout' ? workHoursBetween(checkinRow?.time, input.time) : '',
       });
 
       await sheets.spreadsheets.values.append({
@@ -252,4 +290,18 @@ export function recordAttendance(input: RecordAttendanceInput): Promise<RecordAt
       };
     }
   });
+}
+
+export async function getAttendanceHistory(input: {
+  lineUserId: string; employeeId: string; employmentType: string; month: number; year: number;
+}): Promise<AttendanceHistoryItem[]> {
+  const sheetName = env.sheetNames.attendance();
+  const table = await loadTable(sheetName);
+  if (!table) return [];
+  // History is READ-ONLY (Google Sheets is the source of truth, no-store): never
+  // migrate columns here. buildAttendanceHistory works with whatever columns
+  // exist — empId is optional and workHours is recomputed from the sheet times.
+  return buildAttendanceHistory(table.rows, {
+    lineUserId: input.lineUserId, employeeId: input.employeeId,
+  }, input.month, input.year, input.employmentType);
 }

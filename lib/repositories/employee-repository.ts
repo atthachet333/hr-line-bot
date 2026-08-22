@@ -1,5 +1,7 @@
 import { env } from '@/lib/env';
 import { columnLetter, getSheetsClient } from '@/lib/sheets/client';
+import { logger } from '@/lib/logger';
+import { maskId } from '@/lib/utils/mask';
 
 export interface Employee {
   lineUserId: string;
@@ -9,6 +11,7 @@ export interface Employee {
   department: string;
   /** Optional per-employee manager. Falls back to the configured manager target. */
   managerLineUserId: string;
+  employmentType?: string;
 }
 
 /** Normalise an employee id for matching: trim + uppercase. */
@@ -24,6 +27,40 @@ interface EmployeesTable {
   sheetName: string;
 }
 
+/** Header aliases for the optional EmploymentType column (case variants only). */
+const EMPLOYMENT_TYPE_ALIASES = ['EmploymentType', 'employmentType'] as const;
+
+// The EmploymentType header is appended at most ONCE per process, best-effort,
+// and completely off the read path (see loadTable). This flag guarantees we
+// never issue the write on every request.
+let employmentTypeEnsureStarted = false;
+
+/**
+ * Best-effort, isolated append of the EmploymentType header cell. NEVER awaited
+ * on a lookup path and NEVER allowed to throw into a caller — if the service
+ * account is read-only (or anything fails) the column simply stays absent and
+ * `employmentType` reads as '' (it is optional). This is the fix for the
+ * regression where a write-on-read inside loadTable made every employee lookup
+ * return null / throw when the write failed.
+ */
+async function ensureEmploymentTypeColumn(sheetName: string, columnCount: number): Promise<void> {
+  const { sheets, spreadsheetId } = await getSheetsClient();
+  const nextColumn = columnLetter(columnCount);
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `${sheetName}!${nextColumn}1`,
+    valueInputOption: 'RAW',
+    requestBody: { values: [['EmploymentType']] },
+  });
+}
+
+/**
+ * Load the Employees table. READ-ONLY: it never writes, so a lookup can never
+ * fail because of a header migration. Header cells are trimmed (whitespace
+ * tolerance) but never renamed or reordered. If the sheet lacks the optional
+ * EmploymentType column, a one-time, fire-and-forget append is kicked off that
+ * cannot affect this (or any) read.
+ */
 async function loadTable(): Promise<EmployeesTable | null> {
   if (!env.googleSheetId()) return null;
   const { sheets, spreadsheetId } = await getSheetsClient();
@@ -34,8 +71,20 @@ async function loadTable(): Promise<EmployeesTable | null> {
   });
   const values = (res.data.values as string[][] | undefined) ?? [];
   if (values.length === 0) return null;
-  const header = values[0];
+  const header = values[0].map((value) => String(value ?? '').trim());
   const index = new Map(header.map((h, i) => [h, i] as const));
+
+  // Optional column: append it once, off the critical path. A failure here is
+  // silently ignored — it must never break employee resolution.
+  const hasEmploymentType = EMPLOYMENT_TYPE_ALIASES.some((a) => index.has(a));
+  if (!hasEmploymentType && !employmentTypeEnsureStarted) {
+    employmentTypeEnsureStarted = true;
+    void ensureEmploymentTypeColumn(sheetName, header.length).catch(() => {
+      // read-only service account or transient error — leave the column absent.
+      employmentTypeEnsureStarted = false;
+    });
+  }
+
   return {
     header,
     col: (name: string) => (index.has(name) ? (index.get(name) as number) : -1),
@@ -49,6 +98,13 @@ function rowToEmployee(row: string[], col: EmployeesTable['col']): Employee {
     const i = col(name);
     return i === -1 ? '' : (row[i] ?? '');
   };
+  const cellByAliases = (names: readonly string[]) => {
+    for (const n of names) {
+      const i = col(n);
+      if (i !== -1) return row[i] ?? '';
+    }
+    return '';
+  };
   return {
     lineUserId: cell('lineUserId'),
     employeeId: cell('employeeId'),
@@ -56,6 +112,7 @@ function rowToEmployee(row: string[], col: EmployeesTable['col']): Employee {
     position: cell('position'),
     department: cell('department'),
     managerLineUserId: cell('managerLineUserId'),
+    employmentType: cellByAliases(EMPLOYMENT_TYPE_ALIASES),
   };
 }
 
@@ -70,13 +127,25 @@ function rowToEmployee(row: string[], col: EmployeesTable['col']): Employee {
  * the sheet holds a different/incorrect lineUserId for the employee).
  */
 export async function findByLineUserId(lineUserId: string): Promise<Employee | null> {
-  if (!lineUserId) return null;
+  // Exact match AFTER trimming both sides — a stored cell may carry stray
+  // whitespace/newline from a copy-paste. Never lowercase/slice/fuzzy-match: a
+  // LINE user id must still match exactly.
+  const target = String(lineUserId ?? '').trim();
+  if (!target) return null;
   try {
     const table = await loadTable();
     if (!table || table.col('lineUserId') === -1) return null;
     const iLine = table.col('lineUserId');
-    const row = table.rows.find((r) => (r[iLine] ?? '') === lineUserId);
-    return row ? rowToEmployee(row, table.col) : null;
+    const matches = table.rows.filter((r) => String(r[iLine] ?? '').trim() === target);
+    if (matches.length > 1) {
+      // Never pick silently — surface it (masked) so an admin can fix the sheet.
+      logger.warn('employee_lookup', {
+        code: 'DUPLICATE_LINE_USER_ID',
+        lineUserIdMasked: maskId(target),
+        count: matches.length,
+      });
+    }
+    return matches[0] ? rowToEmployee(matches[0], table.col) : null;
   } catch {
     return null;
   }

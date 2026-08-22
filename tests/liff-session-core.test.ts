@@ -43,6 +43,21 @@ describe('resolveSessionCore', () => {
     expect(d.login).toHaveBeenCalledWith('https://s2aline.s2aconsultant.com/liff/leave');
   });
 
+  it('uses an explicit in-scope redirectUri when provided (attendance-history 400 fix)', async () => {
+    // History reuses the checkin LIFF id but lives at an out-of-scope path; it
+    // supplies an in-scope owner return URL so LINE does not 400.
+    const d = makeDeps({
+      isLoggedIn: () => false,
+      href: 'https://s2aline.s2aconsultant.com/liff/attendance/history?from=checkin',
+      redirectUri: 'https://s2aline.s2aconsultant.com/liff/checkin?next=attendance-history&from=checkin',
+    });
+    const r = await resolveSessionCore(d);
+    expect(r.status).toBe('redirecting');
+    expect(d.login).toHaveBeenCalledWith('https://s2aline.s2aconsultant.com/liff/checkin?next=attendance-history&from=checkin');
+    // Never the out-of-scope history path.
+    expect(d.login).not.toHaveBeenCalledWith(expect.stringContaining('/liff/attendance/history'));
+  });
+
   it('logged in but access token null -> logout + login (guarded), marks relogin', async () => {
     const d = makeDeps({ getAccessToken: () => null });
     const r = await resolveSessionCore(d);
@@ -91,5 +106,21 @@ describe('escalateReloginCore (API 401 recovery)', () => {
     expect(out).toBe('blocked');
     expect(login).not.toHaveBeenCalled();
     expect(logout).not.toHaveBeenCalled();
+  });
+
+  it('uses an explicit in-scope redirectUri during 401 recovery', () => {
+    const login = vi.fn();
+    const redirectUri = 'https://s2aline.s2aconsultant.com/liff/checkout?next=attendance-history&from=checkout';
+    const out = escalateReloginCore({
+      reloginPending: () => false,
+      markRelogin: vi.fn(),
+      login,
+      logout: vi.fn(),
+      href: 'https://s2aline.s2aconsultant.com/liff/attendance/history?from=checkout',
+      redirectUri,
+    });
+    expect(out).toBe('redirecting');
+    expect(login).toHaveBeenCalledWith(redirectUri);
+    expect(login).not.toHaveBeenCalledWith(expect.stringContaining('/liff/attendance/history'));
   });
 });

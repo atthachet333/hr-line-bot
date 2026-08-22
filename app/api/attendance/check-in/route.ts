@@ -16,7 +16,7 @@ import { findByLineUserId } from '@/lib/repositories/employee-repository';
 import { recordAttendance } from '@/lib/attendance/attendance-repository';
 import { businessDateThailand } from '@/lib/utils/datetime';
 import { logger } from '@/lib/logger';
-import { maskId } from '@/lib/utils/mask';
+import { maskId, maskEmployeeId } from '@/lib/utils/mask';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -28,11 +28,16 @@ export async function POST(req: Request): Promise<NextResponse> {
   try {
     const body = await readJsonBody<Record<string, unknown>>(req);
 
-    const identity = await verifyIdentity({
-      idToken: typeof body.idToken === 'string' ? body.idToken : undefined,
-      accessToken: (typeof body.accessToken === 'string' ? body.accessToken : undefined) ?? bearerToken(req),
-    });
+    const idToken = typeof body.idToken === 'string' ? body.idToken : undefined;
+    const accessToken = (typeof body.accessToken === 'string' ? body.accessToken : undefined) ?? bearerToken(req);
+    const identity = await verifyIdentity({ idToken, accessToken });
     if (!identity.ok) {
+      // Diagnostic: prove this failed at the LINE token stage (not employee lookup).
+      logger.warn('attendance_checkin_identity', {
+        route: ROUTE, correlationId, failureStage: 'line_verify',
+        tokenPresent: Boolean(idToken || accessToken), lineVerifyOk: false,
+        failureCode: 'AUTHENTICATION_ERROR',
+      });
       throw new AuthenticationError('ไม่สามารถยืนยันตัวตนได้ กรุณาเปิดจากแอป LINE อีกครั้ง');
     }
     const lineUserId = identity.identity.lineUserId;
@@ -46,13 +51,25 @@ export async function POST(req: Request): Promise<NextResponse> {
 
     const clientRequestId = typeof body.clientRequestId === 'string' ? body.clientRequestId.slice(0, 100) : '';
     const employee = await findByLineUserId(lineUserId);
-    const displayName = employee?.name || identity.identity.displayName || 'พนักงาน';
+    logger.info('attendance_checkin_identity', {
+      route: ROUTE, correlationId, failureStage: employee ? 'none' : 'employee_lookup',
+      tokenPresent: true, lineVerifyOk: true,
+      lineUserIdMasked: maskId(lineUserId),
+      employeeFound: Boolean(employee),
+      employeeIdMasked: maskEmployeeId(employee?.employeeId),
+      employeeNamePresent: Boolean(employee?.name?.trim()),
+      employmentTypePresent: Boolean(employee?.employmentType?.trim()),
+    });
+    // When the employee is resolved, the HR name (Employees.Name) is authoritative;
+    // the LINE profile nickname is only a fallback when no employee/name exists.
+    const displayName = employee?.name?.trim() || identity.identity.displayName || 'พนักงาน';
     const businessDate = businessDateThailand();
 
     const result = await recordAttendance({
       type: 'checkin',
       lineUserId,
       employeeId: employee?.employeeId ?? '',
+      employmentType: employee?.employmentType ?? '',
       displayName,
       businessDate,
       time,

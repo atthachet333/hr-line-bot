@@ -15,7 +15,7 @@
  * equalled "today").
  */
 import { normalizeEmployeeId } from '@/lib/repositories/employee-repository';
-import { sheetDateToYmd } from '@/lib/utils/datetime';
+import { parseSheetDate, sheetDateToYmd } from '@/lib/utils/datetime';
 
 export type AttendanceType = 'checkin' | 'checkout';
 
@@ -31,6 +31,85 @@ export interface AttendanceRow {
   type?: string;
   /** Idempotency key stored on the row, if any. */
   clientRequestId?: string;
+  time?: string;
+  employmentType?: string;
+  workHours?: string | number;
+}
+
+export interface AttendanceHistoryItem {
+  date: string;
+  checkin: string;
+  checkout: string;
+  workHours: number | null;
+  employmentType: string;
+  status: 'complete' | 'open';
+}
+
+function timeToMinutes(value: unknown): number | null {
+  const match = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(String(value ?? '').trim());
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  const seconds = Number(match[3] ?? 0);
+  if (hours > 23 || minutes > 59 || seconds > 59) return null;
+  return hours * 60 + minutes + seconds / 60;
+}
+
+/** Pair this employee's event rows by Bangkok business date. Sheet values win. */
+export function buildAttendanceHistory(
+  rows: readonly AttendanceRow[], key: EmployeeKey, month: number, year: number,
+  fallbackEmploymentType = '',
+): AttendanceHistoryItem[] {
+  const days = new Map<string, { checkin: string; checkout: string; employmentType: string }>();
+  for (const row of rows) {
+    if (!rowMatchesEmployee(row, key)) continue;
+    const date = sheetDateToYmd(row.date);
+    const parsed = parseSheetDate(row.date);
+    if (!date || !parsed || parsed.getUTCFullYear() !== year || parsed.getUTCMonth() + 1 !== month) continue;
+    const type = normalizeType(row.type);
+    if (!type) continue;
+    const day = days.get(date) ?? { checkin: '', checkout: '', employmentType: '' };
+    if (type === 'checkin' && !day.checkin) day.checkin = String(row.time ?? '').trim();
+    if (type === 'checkout') day.checkout = String(row.time ?? '').trim();
+    if (String(row.employmentType ?? '').trim()) day.employmentType = String(row.employmentType).trim();
+    days.set(date, day);
+  }
+  return [...days.entries()].map(([date, day]) => {
+    const start = timeToMinutes(day.checkin);
+    const end = timeToMinutes(day.checkout);
+    const workHours = start !== null && end !== null && end >= start ? (end - start) / 60 : null;
+    return { date, checkin: day.checkin, checkout: day.checkout, workHours,
+      employmentType: day.employmentType || fallbackEmploymentType,
+      status: day.checkout ? 'complete' as const : 'open' as const };
+  }).sort((a, b) => b.date.localeCompare(a.date));
+}
+
+export interface AttendanceSummary {
+  /** Unique business dates that have a check-in (never counts event rows). */
+  workDays: number;
+  /** Canonical total worked minutes across COMPLETE days only (open days excluded). */
+  totalMinutes: number;
+}
+
+/**
+ * Summarise already-built history items (one per business date, already scoped to
+ * one employee + month/year). Canonical numeric output only — UI does the Thai
+ * formatting. A day counts as a work day when it has a check-in, even if the
+ * check-out is still missing; but only complete days contribute to totalMinutes
+ * (never guess a missing check-out from the current time).
+ */
+export function calculateAttendanceSummary(
+  items: readonly AttendanceHistoryItem[],
+): AttendanceSummary {
+  let workDays = 0;
+  let totalMinutes = 0;
+  for (const item of items) {
+    if (item.checkin) workDays++;
+    if (item.workHours !== null) totalMinutes += item.workHours * 60;
+  }
+  // workHours carries seconds as a fraction of an hour; round the aggregate to a
+  // whole minute so the canonical value is clean (HH:MM inputs stay exact).
+  return { workDays, totalMinutes: Math.round(totalMinutes) };
 }
 
 /** The acting employee, resolved from the verified LINE token. */

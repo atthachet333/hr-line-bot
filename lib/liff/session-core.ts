@@ -23,6 +23,13 @@ export interface SessionDeps {
   logout: () => void;
   /** Current URL (href). */
   href: string;
+  /**
+   * Explicit login redirect URI. Used when the current page is NOT under this
+   * LIFF app's endpoint scope (e.g. /liff/attendance/history reusing the checkin
+   * LIFF id) — returning to an out-of-scope path makes LINE reject the login
+   * with 400. When omitted, the sanitized current href is used.
+   */
+  redirectUri?: string;
   /** True when a forced re-login is already pending (loop guard). */
   reloginPending: () => boolean;
   markRelogin: () => void;
@@ -41,7 +48,7 @@ export async function resolveSessionCore(deps: SessionDeps): Promise<SessionCore
   if (!(await deps.ensureInit())) return { status: 'error', code: 'LIFF_INIT_FAILED' };
 
   if (!deps.isLoggedIn()) {
-    deps.login(sanitizeRedirectUri(deps.href));
+    deps.login(deps.redirectUri ?? sanitizeRedirectUri(deps.href));
     return { status: 'redirecting' };
   }
 
@@ -52,7 +59,7 @@ export async function resolveSessionCore(deps: SessionDeps): Promise<SessionCore
     if (deps.reloginPending()) return { status: 'error', code: 'LIFF_ACCESS_TOKEN_MISSING' };
     deps.markRelogin();
     deps.logout();
-    deps.login(sanitizeRedirectUri(deps.href));
+    deps.login(deps.redirectUri ?? sanitizeRedirectUri(deps.href));
     return { status: 'redirecting' };
   }
   return { status: 'ready', accessToken: token };
@@ -64,6 +71,8 @@ export interface EscalateDeps {
   login: (redirectUri: string) => void;
   logout: () => void;
   href: string;
+  /** Explicit in-scope login redirect (see SessionDeps.redirectUri). */
+  redirectUri?: string;
 }
 
 /**
@@ -75,6 +84,6 @@ export function escalateReloginCore(deps: EscalateDeps): 'redirecting' | 'blocke
   if (deps.reloginPending()) return 'blocked';
   deps.markRelogin();
   deps.logout();
-  deps.login(sanitizeRedirectUri(deps.href));
+  deps.login(deps.redirectUri ?? sanitizeRedirectUri(deps.href));
   return 'redirecting';
 }

@@ -7,6 +7,10 @@ const fakeSheets = {
   spreadsheets: {
     values: {
       get: vi.fn(async () => ({ data: { values: store } })),
+      update: vi.fn(async (args: { requestBody: { values: unknown[][] } }) => {
+        store[0] = [...args.requestBody.values[0]];
+        return { data: {} };
+      }),
       append: vi.fn(async (args: { requestBody: { values: unknown[][] } }) => {
         for (const row of args.requestBody.values) store.push(row);
         return { data: {} };

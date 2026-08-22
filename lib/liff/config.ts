@@ -65,6 +65,48 @@ export function liffUrl(liffId: string): string {
   return `https://liff.line.me/${liffId}`;
 }
 
+/**
+ * The attendance-history page has NO dedicated LIFF id — it reuses the checkin
+ * or checkout LIFF context depending on where it was opened from. This "owner"
+ * decides which existing LIFF id/endpoint the history page authenticates against.
+ */
+export type AttendanceHistoryOwner = 'checkin' | 'checkout';
+
+/** Sanitize an untrusted `from` query value to a known owner (default checkin). */
+export function sanitizeHistoryOwner(value: string | null | undefined): AttendanceHistoryOwner {
+  return value === 'checkout' ? 'checkout' : 'checkin';
+}
+
+/**
+ * In-scope login return URL for the attendance-history page. Because history
+ * reuses the owner's LIFF id, the LIFF login MUST return to a path under the
+ * owner's endpoint (/liff/checkin or /liff/checkout) — returning to
+ * /liff/attendance/history is out-of-scope and LINE rejects it with a 400. The
+ * owner page then forwards back to history via the `next=attendance-history`
+ * marker once the session is ready.
+ */
+export function attendanceHistoryLoginReturnUrl(owner: AttendanceHistoryOwner, origin: string): string {
+  const base = origin && origin.trim() ? origin.replace(/\/$/, '') : PRODUCTION_ORIGIN;
+  return `${base}${CANONICAL_PATHS[owner]}?next=attendance-history&from=${owner}`;
+}
+
+/**
+ * After the owner page (checkin/checkout) finishes login and its session is
+ * ready, it forwards back to the history route IFF the login return carried the
+ * `next=attendance-history` marker. Returns the safe relative path to navigate
+ * to, or null when there is nothing to forward. Only a fixed, known path is ever
+ * produced — the query is never used to build an arbitrary destination.
+ */
+export function attendanceHistoryForwardPath(
+  search: string | null | undefined,
+  owner: AttendanceHistoryOwner,
+): string | null {
+  if (!search) return null;
+  const params = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
+  if (params.get('next') !== 'attendance-history') return null;
+  return `/liff/attendance/history?from=${owner}`;
+}
+
 export type MessageLiffPage = 'checkin' | 'checkout' | 'leave' | 'balance';
 
 /**

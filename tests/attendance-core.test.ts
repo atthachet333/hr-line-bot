@@ -5,6 +5,7 @@ import {
   evaluateCheckin,
   evaluateCheckout,
   findByClientRequestId,
+  buildAttendanceHistory,
   type AttendanceRow,
   type EmployeeKey,
 } from '@/lib/attendance/attendance-core';
@@ -109,5 +110,25 @@ describe('findByClientRequestId (idempotency)', () => {
     expect(findByClientRequestId(rows, A, 'checkin', 'req-1')).toBeNull();
     const rows2 = [row({ empId: 'S2A001', type: 'checkout', clientRequestId: 'req-1' })];
     expect(findByClientRequestId(rows2, A, 'checkin', 'req-1')).toBeNull();
+  });
+});
+
+describe('buildAttendanceHistory', () => {
+  it('isolates employees and recalculates hours from current sheet times', () => {
+    const rows = [
+      row({ empId: 'S2A001', type: 'checkin', time: '08:30', employmentType: 'พนักงานรายวัน' }),
+      row({ empId: 'S2A001', type: 'checkout', time: '17:45', workHours: 'wrong-old-value' }),
+      row({ empId: 'S2A002', type: 'checkin', time: '07:00' }),
+    ];
+    const history = buildAttendanceHistory(rows, A, 8, 2026);
+    expect(history).toHaveLength(1);
+    expect(history[0].workHours).toBe(9.25);
+    expect(history[0].employmentType).toBe('พนักงานรายวัน');
+  });
+
+  it('supports legacy serial dates and leaves hours blank before checkout', () => {
+    const serial = Math.round((Date.UTC(2026, 7, 10) - Date.UTC(1899, 11, 30)) / 86_400_000);
+    const history = buildAttendanceHistory([row({ date: serial, empId: 'S2A001', time: '08:30' })], A, 8, 2026);
+    expect(history[0]).toMatchObject({ workHours: null, status: 'open', employmentType: '' });
   });
 });

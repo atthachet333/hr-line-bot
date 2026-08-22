@@ -6,6 +6,7 @@ import { useMounted } from '@/lib/hooks/use-mounted';
 import { initializeLiffSession, LiffAuthError } from '@/lib/liff/session';
 import { authenticatedFetch } from '@/lib/liff/authenticated-fetch';
 import { liffErrorMessage } from '@/lib/liff/error-messages';
+import { attendanceHistoryForwardPath } from '@/lib/liff/config';
 
 export default function CheckOutPage() {
   const isMounted = useMounted();
@@ -39,6 +40,8 @@ export default function CheckOutPage() {
         setErrorMsg(liffErrorMessage(session.code));
         return;
       }
+      const forward = attendanceHistoryForwardPath(window.location.search, 'checkout');
+      if (forward) { window.location.replace(forward); return; }
       try {
         const profile = await liff.getProfile();
         setDisplayName(profile.displayName);
@@ -116,6 +119,7 @@ export default function CheckOutPage() {
           </div>
 
           <form onSubmit={handleCheckOut} className="px-8 py-6 space-y-6">
+            <a href="/liff/attendance/history?from=checkout" className="block w-full rounded-xl border-2 border-slate-300 bg-slate-50 px-4 py-3 text-center font-bold text-slate-800">ดูประวัติการเข้างาน–ออกงาน</a>
             <div className="flex justify-between items-center bg-gray-50 p-4 rounded-xl border border-gray-200">
               <div><span className="text-gray-600 font-medium block text-sm">เวลาออกงาน</span><span className="text-xs text-gray-400">{dateText}</span></div>
               <span className="text-3xl font-bold text-gray-900 tracking-wider">{timeText}</span>

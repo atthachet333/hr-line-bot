@@ -18,6 +18,8 @@
     "richmenu:image-check": "tsx scripts/richmenu-image-check.ts",
     "richmenu:image-convert": "powershell -ExecutionPolicy Bypass -File scripts/richmenu-image-convert.ps1",
     "evidence:cleanup": "tsx scripts/evidence-cleanup.ts",
+    "attendance:migrate-columns": "tsx scripts/migrate-attendance-columns.ts",
+    "employees:diagnose": "tsx scripts/diagnose-employees.ts",
     "security:check": "node scripts/security-check.mjs",
     "verify:production": "npm run validate:env && npm run lint && npm run typecheck && npm run test && npm run build && npm run security:check"
   },

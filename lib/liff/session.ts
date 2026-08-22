@@ -77,10 +77,21 @@ function href(): string {
  * Ensure a usable LIFF session for `page` (init → login/re-login → fresh token).
  * Uses the pure core for the decision so it is loop-safe and testable.
  */
-async function ensureSession(page: LiffPage): Promise<LiffSession> {
+export interface LiffSessionOptions {
+  /**
+   * Explicit login redirect URI for pages that reuse another page's LIFF id and
+   * live OUTSIDE that LIFF app's endpoint scope (e.g. the attendance-history
+   * page reusing the checkin/checkout id). Must point at an in-scope path so
+   * LINE does not reject login with 400.
+   */
+  loginRedirectUri?: string;
+}
+
+async function ensureSession(page: LiffPage, opts: LiffSessionOptions = {}): Promise<LiffSession> {
   const liffId = getLiffIdForPage(page);
   return resolveSessionCore({
     liffId,
+    redirectUri: opts.loginRedirectUri,
     ensureInit: () => ensureInit(liffId, page),
     isLoggedIn: () => liff.isLoggedIn(),
     ready: async () => {
@@ -112,8 +123,8 @@ async function ensureSession(page: LiffPage): Promise<LiffSession> {
   });
 }
 
-export function initializeLiffSession(page: LiffPage): Promise<LiffSession> {
-  return ensureSession(page);
+export function initializeLiffSession(page: LiffPage, opts: LiffSessionOptions = {}): Promise<LiffSession> {
+  return ensureSession(page, opts);
 }
 
 /** Force a fresh read of the session/token (used by the 401 recovery path). */
@@ -126,7 +137,7 @@ export function reinitializeLiffSession(page: LiffPage): Promise<LiffSession> {
  * most once until a successful API call clears the marker. Returns 'redirecting'
  * (navigating to login) or 'blocked' (already tried — caller shows an error).
  */
-export function escalateRelogin(page: LiffPage): 'redirecting' | 'blocked' {
+export function escalateRelogin(page: LiffPage, opts: LiffSessionOptions = {}): 'redirecting' | 'blocked' {
   return escalateReloginCore({
     reloginPending: () => reloginPending(page),
     markRelogin: () => markRelogin(page),
@@ -142,6 +153,7 @@ export function escalateRelogin(page: LiffPage): 'redirecting' | 'blocked' {
       }
     },
     href: href(),
+    redirectUri: opts.loginRedirectUri,
   });
 }
 

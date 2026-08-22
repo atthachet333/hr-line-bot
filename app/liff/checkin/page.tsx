@@ -6,6 +6,7 @@ import { useMounted } from '@/lib/hooks/use-mounted';
 import { initializeLiffSession, LiffAuthError } from '@/lib/liff/session';
 import { authenticatedFetch } from '@/lib/liff/authenticated-fetch';
 import { liffErrorMessage } from '@/lib/liff/error-messages';
+import { attendanceHistoryForwardPath } from '@/lib/liff/config';
 
 export default function CheckInPage() {
   const isMounted = useMounted();
@@ -33,6 +34,11 @@ export default function CheckInPage() {
         setErrorMsg(liffErrorMessage(session.code));
         return;
       }
+      // If we returned here only to bounce to the attendance-history page (its
+      // login must land under this in-scope endpoint), forward now that we are
+      // authenticated.
+      const forward = attendanceHistoryForwardPath(window.location.search, 'checkin');
+      if (forward) { window.location.replace(forward); return; }
       try {
         const profile = await liff.getProfile();
         setDisplayName(profile.displayName);
@@ -136,6 +142,7 @@ export default function CheckInPage() {
           </div>
 
           <form onSubmit={handleCheckIn} className="px-8 py-8 space-y-6">
+            <a href="/liff/attendance/history?from=checkin" className="block w-full rounded-xl border-2 border-blue-200 bg-blue-50 px-4 py-3 text-center font-bold text-blue-700">ดูประวัติการเข้างาน–ออกงาน</a>
             <div className="text-center bg-gray-50 p-6 rounded-2xl border-2 border-gray-100">
               <p className="text-sm text-gray-500 mb-1">เวลาปัจจุบัน</p>
               <h2 className="text-4xl font-bold text-blue-600 tracking-wider">
