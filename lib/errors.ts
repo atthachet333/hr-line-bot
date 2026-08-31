@@ -20,6 +20,8 @@ export type ErrorCode =
   | 'BALANCE_DATA_INVALID'
   | 'UNSUPPORTED_EVIDENCE_TYPE'
   | 'EVIDENCE_TOO_LARGE'
+  | 'TOO_MANY_EVIDENCE_FILES'
+  | 'EVIDENCE_TOTAL_TOO_LARGE'
   | 'EVIDENCE_CONTENT_MISMATCH'
   | 'EVIDENCE_UPLOAD_FAILED'
   | 'OVERLAPPING_LEAVE_REQUEST'
@@ -50,6 +52,11 @@ export abstract class AppError extends Error {
 export class ValidationError extends AppError {
   readonly status = 400;
   readonly code = 'VALIDATION_ERROR' as const;
+  readonly clientDetail?: string;
+  constructor(userMessage: string, clientDetail?: string) {
+    super(userMessage);
+    this.clientDetail = clientDetail;
+  }
 }
 export class AuthenticationError extends AppError {
   readonly status = 401;
@@ -108,6 +115,8 @@ export interface ErrorEnvelope {
   code: ErrorCode;
   message: string;
   correlationId: string;
+  /** Stable, non-sensitive validation reason that a client may act on. */
+  detail?: string;
 }
 
 /** Convert any thrown value into a safe, uniform error envelope. */
@@ -119,7 +128,13 @@ export function toErrorEnvelope(err: unknown, correlationId: string): {
   if (err instanceof AppError) {
     return {
       status: err.status,
-      body: { success: false, code: err.code, message: err.userMessage, correlationId },
+      body: {
+        success: false,
+        code: err.code,
+        message: err.userMessage,
+        correlationId,
+        ...(err instanceof ValidationError && err.clientDetail ? { detail: err.clientDetail } : {}),
+      },
       detail: err.detail,
     };
   }

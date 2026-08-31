@@ -110,8 +110,9 @@ export function validateEvidence(input: {
   if (ext && !detected.ext.includes(ext)) {
     return { ok: false, code: 'EVIDENCE_CONTENT_MISMATCH' };
   }
-  // A claimed MIME, when present, must match the sniffed type.
-  if (input.claimedMime && input.claimedMime !== detected.mime && ALLOWED_MIMES.includes(input.claimedMime)) {
+  // A claimed MIME, when present, must itself be allow-listed and match the
+  // sniffed content. It is only one signal; magic bytes remain authoritative.
+  if (input.claimedMime && input.claimedMime !== detected.mime) {
     return { ok: false, code: 'EVIDENCE_CONTENT_MISMATCH' };
   }
 

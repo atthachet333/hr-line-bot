@@ -34,6 +34,7 @@ export interface AttendanceRow {
   time?: string;
   employmentType?: string;
   workHours?: string | number;
+  summary?: string;
 }
 
 export interface AttendanceHistoryItem {
@@ -43,6 +44,10 @@ export interface AttendanceHistoryItem {
   workHours: number | null;
   employmentType: string;
   status: 'complete' | 'open';
+  /** Latest checkout summary, retained for simple/backward-compatible clients. */
+  summary: string;
+  /** Every non-empty checkout summary for this date, in sheet row order. */
+  summaries: string[];
 }
 
 function timeToMinutes(value: unknown): number | null {
@@ -60,7 +65,7 @@ export function buildAttendanceHistory(
   rows: readonly AttendanceRow[], key: EmployeeKey, month: number, year: number,
   fallbackEmploymentType = '',
 ): AttendanceHistoryItem[] {
-  const days = new Map<string, { checkin: string; checkout: string; employmentType: string }>();
+  const days = new Map<string, { checkin: string; checkout: string; employmentType: string; summaries: string[] }>();
   for (const row of rows) {
     if (!rowMatchesEmployee(row, key)) continue;
     const date = sheetDateToYmd(row.date);
@@ -68,9 +73,13 @@ export function buildAttendanceHistory(
     if (!date || !parsed || parsed.getUTCFullYear() !== year || parsed.getUTCMonth() + 1 !== month) continue;
     const type = normalizeType(row.type);
     if (!type) continue;
-    const day = days.get(date) ?? { checkin: '', checkout: '', employmentType: '' };
+    const day = days.get(date) ?? { checkin: '', checkout: '', employmentType: '', summaries: [] };
     if (type === 'checkin' && !day.checkin) day.checkin = String(row.time ?? '').trim();
-    if (type === 'checkout') day.checkout = String(row.time ?? '').trim();
+    if (type === 'checkout') {
+      day.checkout = String(row.time ?? '').trim();
+      const workSummary = String(row.summary ?? '').trim();
+      if (workSummary) day.summaries.push(workSummary);
+    }
     if (String(row.employmentType ?? '').trim()) day.employmentType = String(row.employmentType).trim();
     days.set(date, day);
   }
@@ -80,7 +89,8 @@ export function buildAttendanceHistory(
     const workHours = start !== null && end !== null && end >= start ? (end - start) / 60 : null;
     return { date, checkin: day.checkin, checkout: day.checkout, workHours,
       employmentType: day.employmentType || fallbackEmploymentType,
-      status: day.checkout ? 'complete' as const : 'open' as const };
+      status: day.checkout ? 'complete' as const : 'open' as const,
+      summary: day.summaries.at(-1) ?? '', summaries: day.summaries };
   }).sort((a, b) => b.date.localeCompare(a.date));
 }
 

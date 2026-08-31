@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { validateLeaveInput } from '@/lib/validation/leave';
-import { validateAttendanceInput } from '@/lib/validation/attendance';
+import { validateAttendanceInput, validateWorkSummary } from '@/lib/validation/attendance';
 import { inclusiveDayCount } from '@/lib/utils/datetime';
 import { generateRequestId, isValidRequestId } from '@/lib/utils/request-id';
 
@@ -50,18 +50,9 @@ describe('attendance validation', () => {
     expect(r.ok).toBe(false);
   });
 
-  // Bug 2: work summary is OPTIONAL on check-out — the default (checkout) path
-  // must accept an empty summary and a missing summary field without error.
-  it('accepts check-out with empty summary (default = optional)', () => {
-    const r = validateAttendanceInput({ lat: 13.7, lng: 100.5, time: '18:00:00', summary: '' });
+  it('check-in remains valid without a summary', () => {
+    const r = validateAttendanceInput({ lat: 13.7, lng: 100.5, time: '09:00:00' });
     expect(r.ok).toBe(true);
-    if (r.ok) expect(r.value.summary).toBeUndefined();
-  });
-
-  it('accepts check-out with no summary field at all', () => {
-    const r = validateAttendanceInput({ lat: 13.7, lng: 100.5, time: '18:00:00' });
-    expect(r.ok).toBe(true);
-    if (r.ok) expect(r.value.summary).toBeUndefined();
   });
 
   it('keeps the summary text when provided', () => {
@@ -70,14 +61,43 @@ describe('attendance validation', () => {
     if (r.ok) expect(r.value.summary).toBe('ทำรายงาน');
   });
 
-  it('still caps an abnormally long summary', () => {
-    const r = validateAttendanceInput({ lat: 13.7, lng: 100.5, time: '18:00:00', summary: 'x'.repeat(2001) });
+  it('caps summary at 1,000 characters', () => {
+    const r = validateAttendanceInput({ lat: 13.7, lng: 100.5, time: '18:00:00', summary: 'x'.repeat(1001) });
     expect(r.ok).toBe(false);
   });
 
-  it('the (now unused) requireSummary option still works for other callers', () => {
+  it('checkout mode requires a summary', () => {
     const r = validateAttendanceInput({ lat: 13.7, lng: 100.5, time: '18:00:00' }, { requireSummary: true });
     expect(r.ok).toBe(false);
+  });
+});
+
+describe('checkout work summary validation', () => {
+  it.each([undefined, '', '   '])('rejects missing/blank summary: %j', (summary) => {
+    const result = validateWorkSummary(summary);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.detail).toBe('WORK_SUMMARY_REQUIRED');
+  });
+
+  it.each(['-', '.', 'ok', 'ทำงาน', '123456789'])('rejects too-short summary: %s', (summary) => {
+    const result = validateWorkSummary(summary);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.detail).toBe('WORK_SUMMARY_TOO_SHORT');
+  });
+
+  it('accepts exactly 10 trimmed characters', () => {
+    expect(validateWorkSummary(' 1234567890 ')).toEqual({ ok: true, value: '1234567890' });
+  });
+
+  it('rejects more than 1,000 characters', () => {
+    const result = validateWorkSummary('x'.repeat(1001));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.detail).toBe('WORK_SUMMARY_TOO_LONG');
+  });
+
+  it('accepts valid Thai and English summaries', () => {
+    expect(validateWorkSummary('ตรวจเอกสารลูกค้า 4 เคส').ok).toBe(true);
+    expect(validateWorkSummary('Updated customer records and prepared the daily report.').ok).toBe(true);
   });
 });
 

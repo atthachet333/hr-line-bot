@@ -108,6 +108,7 @@ async function loadTable(sheetName: string): Promise<Table | null> {
   const iTime = col('time');
   const iEmploymentType = col('employmentType');
   const iWorkHours = col('workHours');
+  const iSummary = col('summary');
 
   const rows: AttendanceRow[] = [];
   for (let r = 1; r < values.length; r++) {
@@ -121,6 +122,7 @@ async function loadTable(sheetName: string): Promise<Table | null> {
       time: iTime === -1 ? '' : String(row[iTime] ?? ''),
       employmentType: iEmploymentType === -1 ? '' : String(row[iEmploymentType] ?? ''),
       workHours: iWorkHours === -1 ? '' : String(row[iWorkHours] ?? ''),
+      summary: iSummary === -1 ? '' : String(row[iSummary] ?? ''),
     });
   }
   return { header, col, rows };

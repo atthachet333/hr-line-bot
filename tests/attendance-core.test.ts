@@ -131,4 +131,33 @@ describe('buildAttendanceHistory', () => {
     const history = buildAttendanceHistory([row({ date: serial, empId: 'S2A001', time: '08:30' })], A, 8, 2026);
     expect(history[0]).toMatchObject({ workHours: null, status: 'open', employmentType: '' });
   });
+
+  it('returns the current checkout summary for payroll-ready history', () => {
+    const history = buildAttendanceHistory([
+      row({ empId: 'S2A001', type: 'checkin', time: '08:30' }),
+      row({ empId: 'S2A001', type: 'checkout', time: '17:30', summary: 'ตรวจเอกสารลูกค้า 4 เคส' }),
+    ], A, 8, 2026);
+    expect(history[0]).toMatchObject({
+      summary: 'ตรวจเอกสารลูกค้า 4 เคส',
+      summaries: ['ตรวจเอกสารลูกค้า 4 เคส'],
+    });
+  });
+
+  it('legacy checkout without summary remains valid', () => {
+    const history = buildAttendanceHistory([
+      row({ empId: 'S2A001', type: 'checkin', time: '08:30' }),
+      row({ empId: 'S2A001', type: 'checkout', time: '17:30' }),
+    ], A, 8, 2026);
+    expect(history[0]).toMatchObject({ summary: '', summaries: [], status: 'complete' });
+  });
+
+  it('safely returns multiple checkout summaries in sheet row order', () => {
+    const history = buildAttendanceHistory([
+      row({ empId: 'S2A001', type: 'checkin', time: '08:30' }),
+      row({ empId: 'S2A001', type: 'checkout', time: '17:30', summary: 'First checkout summary' }),
+      row({ empId: 'S2A001', type: 'checkout', time: '18:00', summary: 'Second checkout summary' }),
+    ], A, 8, 2026);
+    expect(history[0].summaries).toEqual(['First checkout summary', 'Second checkout summary']);
+    expect(history[0].summary).toBe('Second checkout summary');
+  });
 });

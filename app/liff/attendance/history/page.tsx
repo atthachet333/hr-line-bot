@@ -6,13 +6,14 @@ import { initializeLiffSession, LiffAuthError, escalateRelogin } from '@/lib/lif
 import { authenticatedFetch } from '@/lib/liff/authenticated-fetch';
 import { sanitizeHistoryOwner, attendanceHistoryLoginReturnUrl } from '@/lib/liff/config';
 import { formatMinutesThai, formatWorkHours, summaryLabels } from '@/lib/attendance/attendance-format';
+import { WorkSummarySection } from './WorkSummarySection';
 
 /** '' = ok. Otherwise a specific, non-misleading failure state. */
 type HistoryError = '' | 'AUTH' | 'NOT_LINKED' | 'LOAD';
 
 interface HistoryItem {
   date: string; checkin: string; checkout: string; workHours: number | null;
-  employmentType: string; status: 'complete' | 'open';
+  employmentType: string; status: 'complete' | 'open'; summary?: string; summaries?: string[];
 }
 interface Summary { workDays: number; totalMinutes: number; }
 
@@ -199,6 +200,11 @@ export default function AttendanceHistoryPage() {
 
             {!loading && !error && items.map((item) => {
               const open = item.status === 'open';
+              // New APIs return every checkout summary. The singular fallback
+              // keeps the UI compatible with an intermediate/older response.
+              const workSummaries = Array.isArray(item.summaries)
+                ? item.summaries.filter((value): value is string => typeof value === 'string' && value.trim() !== '')
+                : (typeof item.summary === 'string' && item.summary.trim() ? [item.summary] : []);
               return (
                 <article key={item.date} className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
                   <div className="mb-4 flex items-start justify-between gap-3">
@@ -230,6 +236,10 @@ export default function AttendanceHistoryPage() {
                       {item.employmentType || 'ยังไม่ระบุ'}
                     </span>
                   </div>
+
+                  {!open && (
+                    <WorkSummarySection date={item.date} summaries={workSummaries} />
+                  )}
                 </article>
               );
             })}

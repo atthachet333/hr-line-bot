@@ -3,6 +3,46 @@
 export const EVIDENCE_STATUS = ['NONE', 'AVAILABLE', 'UPLOAD_FAILED', 'DELETED'] as const;
 export type EvidenceStatus = (typeof EVIDENCE_STATUS)[number];
 
+export const MAX_EVIDENCE_FILES = 5;
+export const LEAVE_EVIDENCE_COLUMNS = [
+  'evidenceId',
+  'requestId',
+  'employeeId',
+  'originalName',
+  'storedName',
+  'mimeType',
+  'size',
+  'relativePath',
+  'uploadedAt',
+  'status',
+  'sha256',
+] as const;
+
+/** One row in the LeaveEvidence sheet. Paths are always storage-root relative. */
+export interface LeaveEvidenceRecord {
+  evidenceId: string;
+  requestId: string;
+  employeeId: string;
+  originalName: string;
+  storedName: string;
+  mimeType: string;
+  size: number;
+  relativePath: string;
+  uploadedAt: string;
+  status: Extract<EvidenceStatus, 'AVAILABLE' | 'DELETED'>;
+  sha256: string;
+}
+
+/** Safe metadata returned to the viewer. Never includes a filesystem path. */
+export interface PublicEvidenceItem {
+  evidenceId: string;
+  originalName: string;
+  mimeType: string;
+  size: number;
+  uploadedAt: string;
+  legacy: boolean;
+}
+
 /** Metadata stored in the LeaveRequests sheet (NEVER binary/base64/absolute path). */
 export interface EvidenceMetadata {
   evidenceStatus: EvidenceStatus;
@@ -32,5 +72,7 @@ export function emptyEvidenceMetadata(): EvidenceMetadata {
 export type EvidenceErrorCode =
   | 'UNSUPPORTED_EVIDENCE_TYPE'
   | 'EVIDENCE_TOO_LARGE'
+  | 'TOO_MANY_EVIDENCE_FILES'
+  | 'EVIDENCE_TOTAL_TOO_LARGE'
   | 'EVIDENCE_CONTENT_MISMATCH'
   | 'EVIDENCE_UPLOAD_FAILED';

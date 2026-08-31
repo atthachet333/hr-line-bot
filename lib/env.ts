@@ -80,6 +80,7 @@ export const env = {
   googleSheetId: () => optional('GOOGLE_SHEET_ID'),
   sheetNames: {
     leaveRequests: () => optional('SHEET_LEAVE_REQUESTS', 'LeaveRequests'),
+    leaveEvidence: () => optional('SHEET_LEAVE_EVIDENCE', 'LeaveEvidence'),
     employees: () => optional('SHEET_EMPLOYEES', 'Employees'),
     auditLog: () => optional('SHEET_AUDIT_LOG', 'AuditLog'),
     holidays: () => optional('SHEET_HOLIDAYS', 'Holidays'),

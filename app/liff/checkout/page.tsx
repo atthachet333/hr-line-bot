@@ -7,6 +7,10 @@ import { initializeLiffSession, LiffAuthError } from '@/lib/liff/session';
 import { authenticatedFetch } from '@/lib/liff/authenticated-fetch';
 import { liffErrorMessage } from '@/lib/liff/error-messages';
 import { attendanceHistoryForwardPath } from '@/lib/liff/config';
+import {
+  WORK_SUMMARY_MAX_LENGTH,
+  validateWorkSummary,
+} from '@/lib/validation/attendance';
 
 export default function CheckOutPage() {
   const isMounted = useMounted();
@@ -20,6 +24,8 @@ export default function CheckOutPage() {
   const [displayName, setDisplayName] = useState("พนักงาน");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  const [summaryError, setSummaryError] = useState('');
+  const [summaryTouched, setSummaryTouched] = useState(false);
   const [clientRequestId] = useState(() =>
     typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
   );
@@ -70,7 +76,15 @@ export default function CheckOutPage() {
     if (!location) return alert("กรุณากดดึงพิกัด GPS ก่อนครับ");
     if (isSubmitting) return; // กันกดซ้ำระหว่างส่ง
 
+    const validatedSummary = validateWorkSummary(summary);
+    setSummaryTouched(true);
+    if (!validatedSummary.ok) {
+      setSummaryError(validatedSummary.error);
+      return;
+    }
+
     setErrorMsg('');
+    setSummaryError('');
     setIsSubmitting(true);
 
     try {
@@ -91,6 +105,8 @@ export default function CheckOutPage() {
         setShowPopup(true); // โชว์ Popup เมื่อบันทึกจริงสำเร็จเท่านั้น
       } else if (res.status === 401) {
         setErrorMsg(liffErrorMessage('AUTHENTICATION_ERROR'));
+      } else if (result.code === 'VALIDATION_ERROR' && String(result.detail ?? '').startsWith('WORK_SUMMARY_')) {
+        setSummaryError(result.message || 'กรุณาตรวจสอบสรุปงานวันนี้');
       } else {
         setErrorMsg(result.message || result.error || 'บันทึกเวลาออกงานไม่สำเร็จ กรุณาลองใหม่');
       }
@@ -103,6 +119,9 @@ export default function CheckOutPage() {
   };
 
   const closeLiff = () => liff.isInClient() ? liff.closeWindow() : setShowPopup(false);
+  const summaryValidation = validateWorkSummary(summary);
+  const summaryIsValid = summaryValidation.ok;
+  const submitDisabled = !location || !summaryIsValid || isSubmitting;
 
   if (!isMounted) return <div className="min-h-screen bg-gray-100 flex items-center justify-center font-bold text-gray-900">กำลังโหลดระบบ...</div>;
 
@@ -138,8 +157,43 @@ export default function CheckOutPage() {
             </div>
 
             <div>
-              <label className="block text-sm font-semibold text-gray-900 mb-2">สรุปงานวันนี้ (ไม่บังคับ)</label>
-              <textarea value={summary} onChange={(e) => setSummary(e.target.value)} maxLength={2000} className="w-full px-4 py-3 bg-white border-2 border-gray-200 rounded-xl focus:outline-none focus:border-gray-900 text-base h-28 resize-none" placeholder="สรุปงานวันนี้ (ถ้ามี)..."></textarea>
+              <label htmlFor="work-summary" className="block text-sm font-semibold text-gray-900 mb-2">สรุปงานวันนี้</label>
+              <p id="work-summary-help" className="mb-3 text-sm leading-relaxed text-gray-500">
+                กรุณาระบุงานที่ทำในวันนี้ก่อนออกงาน เพื่อใช้ประกอบการสรุปงานและ Payroll ประจำเดือน
+              </p>
+              <textarea
+                id="work-summary"
+                value={summary}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setSummary(next);
+                  if (summaryTouched) {
+                    const validation = validateWorkSummary(next);
+                    setSummaryError(validation.ok ? '' : validation.error);
+                  }
+                }}
+                onBlur={() => {
+                  setSummaryTouched(true);
+                  const validation = validateWorkSummary(summary);
+                  setSummaryError(validation.ok ? '' : validation.error);
+                }}
+                minLength={10}
+                maxLength={WORK_SUMMARY_MAX_LENGTH}
+                required
+                rows={5}
+                aria-describedby="work-summary-help work-summary-counter work-summary-error"
+                aria-invalid={Boolean(summaryError)}
+                className={`w-full px-4 py-3 bg-white border-2 rounded-xl focus:outline-none text-base min-h-32 resize-y ${summaryError ? 'border-red-400 focus:border-red-500' : 'border-gray-200 focus:border-gray-900'}`}
+                placeholder="ตัวอย่าง: ตรวจเอกสารลูกค้า, ประสานงานบริษัท A, อัปเดตข้อมูลเคส และสรุปรายงานประจำวัน"
+              />
+              <div className="mt-1.5 flex items-start justify-between gap-3">
+                <p id="work-summary-error" className="text-sm text-red-600" role={summaryError ? 'alert' : undefined}>
+                  {summaryError}
+                </p>
+                <span id="work-summary-counter" className="ml-auto shrink-0 text-xs tabular-nums text-gray-500">
+                  {summary.length}/{WORK_SUMMARY_MAX_LENGTH}
+                </span>
+              </div>
             </div>
             
             {errorMsg && (
@@ -148,15 +202,15 @@ export default function CheckOutPage() {
               </div>
             )}
 
-            <button type="submit" className={`w-full py-4 rounded-xl font-bold text-lg transition-colors shadow-lg ${location && !isSubmitting ? 'bg-gray-900 text-white hover:bg-black' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`} disabled={!location || isSubmitting}>{isSubmitting ? 'กำลังบันทึก...' : 'ยืนยันออกงาน'}</button>
+            <button type="submit" className={`w-full py-4 rounded-xl font-bold text-lg transition-colors shadow-lg ${!submitDisabled ? 'bg-gray-900 text-white hover:bg-black' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`} disabled={submitDisabled}>{isSubmitting ? 'กำลังบันทึก...' : 'ยืนยันออกงาน'}</button>
           </form>
 
           {showPopup && (
             <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm px-4 animate-fade-in">
               <div className="bg-white w-full max-w-sm rounded-3xl p-8 text-center shadow-2xl">
                 <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center text-5xl mx-auto mb-6 text-green-500">🏡</div>
-                <h3 className="text-2xl font-bold text-gray-900 mb-2">ออกงานสำเร็จ!</h3>
-                <p className="text-gray-500 mb-8">บันทึกเวลาและสรุปงานเรียบร้อย เดินทางกลับบ้านปลอดภัยครับ</p>
+                <h3 className="text-2xl font-bold text-gray-900 mb-2">ออกงานเรียบร้อยแล้ว</h3>
+                <p className="text-gray-500 mb-8">บันทึกสรุปงานวันนี้แล้ว</p>
                 <button onClick={closeLiff} className="w-full bg-gray-900 text-white py-3.5 rounded-xl font-bold text-lg hover:bg-black">ปิดหน้าต่าง</button>
               </div>
             </div>

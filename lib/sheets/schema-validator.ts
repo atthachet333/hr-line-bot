@@ -2,6 +2,7 @@ import type { sheets_v4 } from 'googleapis/build/src/apis/sheets';
 import { env } from '@/lib/env';
 import { getSheetsClient } from '@/lib/sheets/client';
 import { LEAVE_REQUEST_CORE_COLUMNS, LEAVE_REQUEST_EVIDENCE_COLUMNS } from '@/lib/domain/leave-request';
+import { LEAVE_EVIDENCE_COLUMNS } from '@/lib/evidence/types';
 
 export interface SheetCheck {
   sheet: string;
@@ -28,6 +29,7 @@ interface SheetSpec {
 function specs(): SheetSpec[] {
   return [
     { name: env.sheetNames.leaveRequests(), required: LEAVE_REQUEST_CORE_COLUMNS as string[], allowEmpty: true, requiredSheet: true },
+    { name: env.sheetNames.leaveEvidence(), required: [...LEAVE_EVIDENCE_COLUMNS], allowEmpty: true, requiredSheet: false },
     { name: env.sheetNames.employees(), required: ['lineUserId', 'employeeId', 'name'], requiredSheet: true },
     {
       name: env.sheetNames.auditLog(),

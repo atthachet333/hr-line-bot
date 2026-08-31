@@ -44,9 +44,10 @@ export async function POST(req: Request): Promise<NextResponse> {
     const rl = rateLimit(`checkout:${lineUserId}`, 10, 60_000);
     if (!rl.allowed) throw new RateLimitError('ดำเนินการบ่อยเกินไป กรุณารอสักครู่');
 
-    // Work summary is OPTIONAL — an empty summary must never fail check-out.
-    const validated = validateAttendanceInput(body);
-    if (!validated.ok) throw new ValidationError(validated.error);
+    // Checkout is never written without a valid daily work summary. Identity
+    // remains derived exclusively from the verified LINE token below.
+    const validated = validateAttendanceInput(body, { requireSummary: true });
+    if (!validated.ok) throw new ValidationError(validated.error, validated.detail);
     const { lat, lng, time, summary } = validated.value;
 
     const clientRequestId = typeof body.clientRequestId === 'string' ? body.clientRequestId.slice(0, 100) : '';
@@ -74,7 +75,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       time,
       lat,
       lng,
-      summary: summary ?? '',
+      summary,
       clientRequestId,
     });
 

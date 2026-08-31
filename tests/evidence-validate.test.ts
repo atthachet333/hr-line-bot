@@ -65,6 +65,11 @@ describe('validateEvidence — rejections', () => {
     const junk = bytes([0x00, 0x01, 0x02, 0x03]);
     expect(validateEvidence({ buffer: junk, fileName: 'a.png', claimedMime: 'image/png', maxBytes: MAX })).toEqual({ ok: false, code: 'EVIDENCE_CONTENT_MISMATCH' });
   });
+
+  it('rejects a claimed non-allowed MIME even when bytes and extension look valid', () => {
+    expect(validateEvidence({ buffer: JPG, fileName: 'a.jpg', claimedMime: 'application/octet-stream', maxBytes: MAX }))
+      .toEqual({ ok: false, code: 'EVIDENCE_CONTENT_MISMATCH' });
+  });
 });
 
 describe('sanitizeFileName / detectType', () => {

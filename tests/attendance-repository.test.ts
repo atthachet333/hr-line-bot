@@ -157,22 +157,14 @@ describe('recordAttendance — Bug 1 (check-out finds check-in)', () => {
   });
 });
 
-describe('recordAttendance — Bug 2 (work summary optional)', () => {
-  it('#9 check-out with empty summary succeeds and stores ""', async () => {
-    await recordAttendance({ ...base(), type: 'checkin' });
-    const co = await recordAttendance({ ...base(), type: 'checkout', summary: '' });
-    expect(co.ok).toBe(true);
+describe('recordAttendance — work summary persistence', () => {
+  it('check-in does not require a summary and stores an empty summary cell', async () => {
+    const ci = await recordAttendance({ ...base(), type: 'checkin' });
+    expect(ci.ok).toBe(true);
     expect(store[store.length - 1][iSummary]).toBe('');
   });
 
-  it('#10 check-out with no summary field succeeds', async () => {
-    await recordAttendance({ ...base(), type: 'checkin' });
-    const co = await recordAttendance({ ...base(), type: 'checkout' }); // summary undefined
-    expect(co.ok).toBe(true);
-    expect(store[store.length - 1][iSummary]).toBe('');
-  });
-
-  it('#11 check-out with text stores the summary', async () => {
+  it('check-out stores the supplied summary in Attendance.summary', async () => {
     await recordAttendance({ ...base(), type: 'checkin' });
     await recordAttendance({ ...base(), type: 'checkout', summary: 'ปิดการขาย 3 ดีล' });
     expect(store[store.length - 1][iSummary]).toBe('ปิดการขาย 3 ดีล');

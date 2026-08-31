@@ -7,6 +7,8 @@ import { initializeLiffSession, LiffAuthError, escalateRelogin } from '@/lib/lif
 import { authenticatedFetch } from '@/lib/liff/authenticated-fetch';
 import { liffErrorMessage } from '@/lib/liff/error-messages';
 import { createSingleClose } from '@/lib/liff/close-window';
+import { mergeEvidenceFiles, fileSelectionKey } from '@/lib/evidence/client-selection';
+import { MAX_EVIDENCE_FILES } from '@/lib/evidence/types';
 
 const EVIDENCE_ALLOWED = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
 const EVIDENCE_MAX_BYTES = 10 * 1024 * 1024;
@@ -55,9 +57,8 @@ export default function LeavePage() {
   const [fatalError, setFatalError] = useState('');
   const [employee, setEmployee] = useState<EmployeeProfile | null>(null);
 
-  // Optional evidence attachment.
-  const [evidenceFile, setEvidenceFile] = useState<File | null>(null);
-  const [evidencePreview, setEvidencePreview] = useState('');
+  // Optional evidence attachments (incremental selections are merged).
+  const [evidenceFiles, setEvidenceFiles] = useState<File[]>([]);
   const [evidenceError, setEvidenceError] = useState('');
 
   // Account-linking screen state.
@@ -199,35 +200,29 @@ export default function LeavePage() {
 
   const onEvidenceChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setEvidenceError('');
-    const file = e.target.files?.[0] ?? null;
-    if (evidencePreview) {
-      URL.revokeObjectURL(evidencePreview);
-      setEvidencePreview('');
-    }
-    if (!file) {
-      setEvidenceFile(null);
-      return;
-    }
-    if (!EVIDENCE_ALLOWED.includes(file.type)) {
+    const incoming = Array.from(e.target.files ?? []);
+    e.target.value = '';
+    if (incoming.length === 0) return;
+    if (incoming.some((file) => !EVIDENCE_ALLOWED.includes(file.type))) {
       setEvidenceError('รองรับเฉพาะไฟล์ JPG, PNG, WEBP หรือ PDF');
-      setEvidenceFile(null);
-      e.target.value = '';
       return;
     }
-    if (file.size > EVIDENCE_MAX_BYTES) {
-      setEvidenceError('ไฟล์มีขนาดใหญ่เกิน 10 MB');
-      setEvidenceFile(null);
-      e.target.value = '';
+    if (incoming.some((file) => file.size > EVIDENCE_MAX_BYTES)) {
+      setEvidenceError('แต่ละไฟล์ต้องมีขนาดไม่เกิน 10 MB');
       return;
     }
-    setEvidenceFile(file);
-    if (file.type.startsWith('image/')) setEvidencePreview(URL.createObjectURL(file));
+    const currentKeys = new Set(evidenceFiles.map(fileSelectionKey));
+    const uniqueIncoming = incoming.filter((file) => !currentKeys.has(fileSelectionKey(file)));
+    if (evidenceFiles.length + uniqueIncoming.length > MAX_EVIDENCE_FILES) {
+      setEvidenceError(`แนบหลักฐานได้สูงสุด ${MAX_EVIDENCE_FILES} ไฟล์`);
+      return;
+    }
+    if (uniqueIncoming.length < incoming.length) setEvidenceError('ข้ามไฟล์ที่เลือกซ้ำแล้ว');
+    setEvidenceFiles((current) => mergeEvidenceFiles(current, incoming));
   };
 
-  const removeEvidence = () => {
-    if (evidencePreview) URL.revokeObjectURL(evidencePreview);
-    setEvidencePreview('');
-    setEvidenceFile(null);
+  const removeEvidence = (index: number) => {
+    setEvidenceFiles((current) => current.filter((_, i) => i !== index));
     setEvidenceError('');
   };
 
@@ -250,7 +245,7 @@ export default function LeavePage() {
       fd.append('startDate', String(raw.get('startDate') ?? ''));
       fd.append('endDate', String(raw.get('endDate') ?? ''));
       fd.append('reason', String(raw.get('reason') ?? ''));
-      if (evidenceFile) fd.append('evidence', evidenceFile, evidenceFile.name);
+      for (const file of evidenceFiles) fd.append('evidenceFiles', file, file.name);
 
       const res = await authenticatedFetch('leave', '/api/leave', { method: 'POST', body: fd });
       const result = await res.json().catch(() => ({}));
@@ -432,32 +427,29 @@ export default function LeavePage() {
               {/* Optional evidence attachment — never required */}
               <div className="pt-2">
                 <label className="block text-sm font-semibold text-slate-700 mb-1">แนบหลักฐานการลา (ไม่บังคับ)</label>
-                <p className="text-xs text-slate-400 mb-2">รองรับ JPG, PNG, WEBP หรือ PDF ขนาดไม่เกิน 10 MB</p>
-                {!evidenceFile ? (
-                  <label className="flex flex-col items-center justify-center gap-2 w-full px-4 py-6 bg-slate-50 border-2 border-dashed border-slate-200 rounded-xl cursor-pointer text-slate-500 hover:border-indigo-300 transition-colors">
-                    <span className="text-2xl">📎</span>
-                    <span className="text-xs font-medium">เลือกรูปภาพหรือไฟล์ PDF</span>
-                    <input type="file" accept="image/jpeg,image/png,image/webp,application/pdf" className="hidden" onChange={onEvidenceChange} />
-                  </label>
-                ) : (
-                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
-                    <div className="flex items-center gap-3">
-                      {evidencePreview ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img src={evidencePreview} alt="ตัวอย่างหลักฐาน" className="w-14 h-14 object-cover rounded-lg border border-slate-200" />
-                      ) : (
-                        <div className="w-14 h-14 rounded-lg bg-red-50 flex items-center justify-center text-2xl">📄</div>
-                      )}
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-slate-800 truncate">{evidenceFile.name}</p>
-                        <p className="text-xs text-slate-400">{formatBytes(evidenceFile.size)}</p>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs text-slate-400">รองรับ JPG, PNG, WEBP หรือ PDF ไฟล์ละไม่เกิน 10 MB</p>
+                  <span className="text-xs font-semibold text-indigo-600">{evidenceFiles.length}/{MAX_EVIDENCE_FILES} ไฟล์</span>
+                </div>
+                <label className="flex flex-col items-center justify-center gap-2 w-full px-4 py-5 bg-slate-50 border-2 border-dashed border-slate-200 rounded-xl cursor-pointer text-slate-500 hover:border-indigo-300 transition-colors">
+                  <span className="text-2xl">📎</span>
+                  <span className="text-xs font-medium">เลือกไฟล์ หรือเลือกเพิ่มภายหลัง</span>
+                  <input multiple type="file" accept="image/jpeg,image/png,image/webp,application/pdf" className="hidden" onChange={onEvidenceChange} />
+                </label>
+                {evidenceFiles.length > 0 && (
+                  <div className="mt-3 space-y-2">
+                    {evidenceFiles.map((file, index) => (
+                      <div key={fileSelectionKey(file)} className="flex items-center gap-3 bg-slate-50 border border-slate-200 rounded-xl p-3">
+                        <div className={`w-11 h-11 rounded-lg flex items-center justify-center text-xl ${file.type === 'application/pdf' ? 'bg-red-50' : 'bg-blue-50'}`}>
+                          {file.type === 'application/pdf' ? '📄' : '🖼️'}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-slate-800 truncate">{file.name}</p>
+                          <p className="text-xs text-slate-400">{file.type || 'ไม่ทราบประเภท'} · {formatBytes(file.size)}</p>
+                        </div>
+                        <button type="button" onClick={() => removeEvidence(index)} className="text-red-500 text-sm font-semibold px-2 py-1 hover:bg-red-50 rounded-lg">ลบ</button>
                       </div>
-                      <button type="button" onClick={removeEvidence} className="text-red-500 text-sm font-semibold px-2 py-1 hover:bg-red-50 rounded-lg">ลบ</button>
-                    </div>
-                    <label className="block mt-2 text-center text-xs text-indigo-600 font-medium cursor-pointer">
-                      เปลี่ยนไฟล์
-                      <input type="file" accept="image/jpeg,image/png,image/webp,application/pdf" className="hidden" onChange={onEvidenceChange} />
-                    </label>
+                    ))}
                   </div>
                 )}
                 {evidenceError && <p className="mt-2 text-xs text-red-600">{evidenceError}</p>}

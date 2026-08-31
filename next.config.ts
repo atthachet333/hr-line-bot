@@ -49,6 +49,7 @@ const nextConfig: NextConfig = {
   // unintentionally" over-trace without dropping any real runtime dependency.
   outputFileTracingExcludes: {
     "/api/leave/\\[requestId\\]/evidence": TRACE_NOISE,
+    "/api/leave/\\[requestId\\]/evidence/\\[evidenceId\\]": TRACE_NOISE,
     "/api/leave": TRACE_NOISE,
     "/liff/evidence": TRACE_NOISE,
     "/liff/evidence/\\[requestId\\]": TRACE_NOISE,

@@ -53,21 +53,27 @@ describe('repository against the reordered (target) header', () => {
 
   it('#8 check-out writes workHours into the workHours column', async () => {
     await recordAttendance({ ...base(), type: 'checkin', time: '08:30' });
-    const co = await recordAttendance({ ...base(), type: 'checkout', time: '17:45' });
+    const co = await recordAttendance({ ...base(), type: 'checkout', time: '17:45', summary: 'Prepared the daily report' });
     expect(co.ok).toBe(true);
     const row = store[store.length - 1];
     expect(row[at('type')]).toBe('checkout');
     expect(row[at('workHours')]).toBe('9.25'); // 08:30→17:45
     expect(row[at('empId')]).toBe('S2A001');
     expect(row[at('userId')]).toBe('U-a');
+    expect(row[at('summary')]).toBe('Prepared the daily report');
   });
 
   it('#9 history reads correctly from the reordered header', async () => {
     await recordAttendance({ ...base(), type: 'checkin', time: '08:30' });
-    await recordAttendance({ ...base(), type: 'checkout', time: '17:30' });
+    await recordAttendance({ ...base(), type: 'checkout', time: '17:30', summary: 'ตรวจงานและสรุปรายงานประจำวัน' });
     const items = await getAttendanceHistory({ lineUserId: 'U-a', employeeId: 'S2A001', employmentType: 'พนักงานประจำ', month: 8, year: 2026 });
     expect(items).toHaveLength(1);
-    expect(items[0]).toMatchObject({ date: TODAY, checkin: '08:30', checkout: '17:30', workHours: 9, status: 'complete' });
+    expect(items[0]).toMatchObject({ date: TODAY, checkin: '08:30', checkout: '17:30', workHours: 9, status: 'complete', summary: 'ตรวจงานและสรุปรายงานประจำวัน' });
+
+    // HR edits Attendance.summary directly; a fresh history read must reflect it.
+    store[store.length - 1][at('summary')] = 'HR แก้ไขสรุปงานในชีตแล้ว';
+    const refreshed = await getAttendanceHistory({ lineUserId: 'U-a', employeeId: 'S2A001', employmentType: 'พนักงานประจำ', month: 8, year: 2026 });
+    expect(refreshed[0].summary).toBe('HR แก้ไขสรุปงานในชีตแล้ว');
   });
 
   it('legacy row with the OLD order is still matched (header-name based)', async () => {

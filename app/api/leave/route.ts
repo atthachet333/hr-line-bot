@@ -19,8 +19,14 @@ import { sendManagerNotification } from '@/lib/services/notification-service';
 import { generateRequestId } from '@/lib/utils/request-id';
 import { nowIso } from '@/lib/utils/datetime';
 import { validateEvidence, type ValidatedEvidence } from '@/lib/evidence/validate';
-import { saveEvidence, isValidEvidenceEmployeeId } from '@/lib/evidence/storage';
-import { emptyEvidenceMetadata, type EvidenceMetadata } from '@/lib/evidence/types';
+import { saveEvidence, deleteEvidence, isValidEvidenceEmployeeId } from '@/lib/evidence/storage';
+import {
+  emptyEvidenceMetadata,
+  MAX_EVIDENCE_FILES,
+  type EvidenceMetadata,
+  type LeaveEvidenceRecord,
+} from '@/lib/evidence/types';
+import * as evidenceRepo from '@/lib/repositories/leave-evidence-repository';
 import type { LeaveRequest } from '@/lib/domain/leave-request';
 
 export const runtime = 'nodejs';
@@ -34,8 +40,7 @@ interface ParsedRequest {
   fields: Record<string, unknown>;
   idToken?: string;
   accessToken?: string;
-  /** Present only when a non-empty evidence file was attached. */
-  evidence?: { buffer: Uint8Array; fileName: string; mime: string };
+  evidenceFiles: { buffer: Uint8Array; fileName: string; mime: string }[];
 }
 
 /**
@@ -51,20 +56,30 @@ async function parseRequest(req: Request, maxBytes: number): Promise<ParsedReque
     const fields: Record<string, unknown> = {};
     for (const [k, v] of form.entries()) if (typeof v === 'string') fields[k] = v;
 
-    let evidence: ParsedRequest['evidence'];
-    const file = form.get('evidence');
-    if (file && typeof file !== 'string' && file.size > 0) {
+    // `evidenceFiles` is the multi-file field. Keep accepting legacy `evidence`
+    // so an older LIFF client can still submit during a rolling deployment.
+    const uploaded = [...form.getAll('evidenceFiles'), ...form.getAll('evidence')]
+      .filter((value): value is File => typeof value !== 'string' && value.size > 0);
+    if (uploaded.length > MAX_EVIDENCE_FILES) {
+      throw new BusinessRuleError('TOO_MANY_EVIDENCE_FILES', `แนบหลักฐานได้สูงสุด ${MAX_EVIDENCE_FILES} ไฟล์`, 400);
+    }
+    const totalBytes = uploaded.reduce((sum, file) => sum + file.size, 0);
+    if (totalBytes > maxBytes * MAX_EVIDENCE_FILES) {
+      throw new BusinessRuleError('EVIDENCE_TOTAL_TOO_LARGE', 'ขนาดไฟล์หลักฐานรวมเกิน 50 MB', 413);
+    }
+    const evidenceFiles: ParsedRequest['evidenceFiles'] = [];
+    for (const file of uploaded) {
       if (file.size > maxBytes) {
         throw new BusinessRuleError('EVIDENCE_TOO_LARGE', 'ไฟล์หลักฐานมีขนาดใหญ่เกิน 10 MB', 413);
       }
       const buf = new Uint8Array(await file.arrayBuffer());
-      evidence = { buffer: buf, fileName: file.name || 'evidence', mime: file.type || '' };
+      evidenceFiles.push({ buffer: buf, fileName: file.name || 'evidence', mime: file.type || '' });
     }
     return {
       fields,
       idToken: typeof fields.idToken === 'string' ? fields.idToken : undefined,
       accessToken: (typeof fields.accessToken === 'string' ? fields.accessToken : undefined) ?? headerToken,
-      evidence,
+      evidenceFiles,
     };
   }
 
@@ -73,6 +88,7 @@ async function parseRequest(req: Request, maxBytes: number): Promise<ParsedReque
     fields: body,
     idToken: typeof body.idToken === 'string' ? body.idToken : undefined,
     accessToken: (typeof body.accessToken === 'string' ? body.accessToken : undefined) ?? headerToken,
+    evidenceFiles: [],
   };
 }
 
@@ -143,18 +159,18 @@ export async function POST(req: Request): Promise<NextResponse> {
 
     // 5. Validate the OPTIONAL evidence up-front (before any row/file is created).
     //    A missing file is always fine — evidence never gates the request.
-    let validatedEvidence: ValidatedEvidence | null = null;
-    if (parsed.evidence) {
+    const validatedEvidence: ValidatedEvidence[] = [];
+    for (const evidence of parsed.evidenceFiles) {
       const v = validateEvidence({
-        buffer: parsed.evidence.buffer,
-        fileName: parsed.evidence.fileName,
-        claimedMime: parsed.evidence.mime,
+        buffer: evidence.buffer,
+        fileName: evidence.fileName,
+        claimedMime: evidence.mime,
         maxBytes,
       });
       if (!v.ok) {
         throw new BusinessRuleError(v.code, evidenceErrorMessage(v.code), evidenceErrorStatus(v.code));
       }
-      validatedEvidence = v.value;
+      validatedEvidence.push(v.value);
     }
 
     // 6. Server-side leave-day calculation (never trust client totalDays).
@@ -233,9 +249,19 @@ export async function POST(req: Request): Promise<NextResponse> {
     // 10. Promote the evidence file (atomic) + write metadata. Failure here NEVER
     //     fails the request — the row stays and is retryable (status UPLOAD_FAILED).
     let evidenceMeta: EvidenceMetadata = emptyEvidenceMetadata();
-    if (validatedEvidence) {
-      evidenceMeta = await attachEvidence(requestId, employee.employeeId, validatedEvidence, correlationId);
-      await leaveRepo.setEvidenceMetadata(requestId, evidenceMeta);
+    if (validatedEvidence.length > 0) {
+      evidenceMeta = await attachEvidenceFiles(requestId, employee.employeeId, validatedEvidence, correlationId);
+      try {
+        // Legacy columns are a compatibility summary only. The authoritative
+        // multi-file rows have already been committed, so a summary-write
+        // failure must not turn an otherwise valid leave into a failed request.
+        await leaveRepo.setEvidenceMetadata(requestId, evidenceMeta);
+      } catch (error) {
+        logger.warn('evidence_legacy_summary_failed', {
+          correlationId, route: ROUTE, leaveRequestId: requestId, result: 'error',
+          detail: error instanceof Error ? error.message.slice(0, 120) : 'error',
+        });
+      }
     }
 
     // 11. Notify manager (Flex reflects the evidence state) and return the result.
@@ -252,6 +278,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       managerNotified: notify.ok,
       balanceChecked: !balanceWarning,
       evidenceStatus: evidenceMeta.evidenceStatus,
+      evidenceCount: evidenceMeta.evidenceStatus === 'AVAILABLE' ? validatedEvidence.length : 0,
       ...(notify.ok ? {} : { retryable: true }),
     };
     if (notify.ok) {
@@ -283,18 +310,19 @@ function evidenceErrorMessage(code: string): string {
  * throws (evidence is optional): on any storage/config problem it returns
  * UPLOAD_FAILED metadata and audits — the request itself still succeeds.
  */
-async function attachEvidence(
+async function attachEvidenceFiles(
   requestId: string,
   employeeId: string,
-  ev: ValidatedEvidence,
+  files: ValidatedEvidence[],
   correlationId: string,
 ): Promise<EvidenceMetadata> {
+  const first = files[0];
   const base: EvidenceMetadata = {
     ...emptyEvidenceMetadata(),
-    evidenceOriginalFileName: ev.originalFileName,
-    evidenceMimeType: ev.mime,
-    evidenceSize: ev.size,
-    evidenceSha256: ev.sha256,
+    evidenceOriginalFileName: first.originalFileName,
+    evidenceMimeType: first.mime,
+    evidenceSize: first.size,
+    evidenceSha256: first.sha256,
   };
   const dir = env.leaveEvidenceDir();
   if (!dir || !isValidEvidenceEmployeeId(employeeId)) {
@@ -303,25 +331,62 @@ async function attachEvidence(
       code: 'EVIDENCE_UPLOAD_FAILED', detail: !dir ? 'storage_not_configured' : 'employeeId_format',
     });
     await auditLog.append({ requestId, action: 'EVIDENCE_UPLOAD_FAILED', detail: !dir ? 'storage not configured' : 'employeeId format' });
+    logger.warn('leave_evidence_upload', {
+      correlationId, leaveRequestId: requestId, fileCount: files.length,
+      acceptedCount: 0, failedCount: files.length, totalBytes: files.reduce((n, file) => n + file.size, 0), result: 'error',
+    });
     return { ...base, evidenceStatus: 'UPLOAD_FAILED' };
   }
+  const written: string[] = [];
   try {
-    const saved = await saveEvidence({ root: dir, employeeId, requestId, bytes: ev.bytes, ext: ev.ext });
+    const uploadedAt = nowIso();
+    const records: LeaveEvidenceRecord[] = [];
+    for (const file of files) {
+      const saved = await saveEvidence({ root: dir, employeeId, requestId, bytes: file.bytes, ext: file.ext });
+      written.push(saved.relativePath);
+      records.push({
+        evidenceId: evidenceRepo.generateEvidenceId(),
+        requestId,
+        employeeId,
+        originalName: file.originalFileName,
+        storedName: saved.storedFileName,
+        mimeType: file.mime,
+        size: file.size,
+        relativePath: saved.relativePath,
+        uploadedAt,
+        status: 'AVAILABLE',
+        sha256: file.sha256,
+      });
+    }
+    // Metadata is committed only after every file has been written.
+    await evidenceRepo.appendMany(records);
     await auditLog.append({
       requestId, action: 'EVIDENCE_ATTACHED',
-      detail: `${ev.mime} ${ev.size}B "${ev.originalFileName}"`, // sanitized name + size, never the path
+      detail: `${records.length} file(s), ${records.reduce((n, record) => n + record.size, 0)}B`,
+    });
+    logger.info('leave_evidence_upload', {
+      correlationId, leaveRequestId: requestId, fileCount: records.length,
+      acceptedCount: records.length, failedCount: 0,
+      totalBytes: records.reduce((n, record) => n + record.size, 0), result: 'ok',
     });
     return {
       ...base,
       evidenceStatus: 'AVAILABLE',
-      evidenceStoredFileName: saved.storedFileName,
-      evidenceRelativePath: saved.relativePath,
-      evidenceUploadedAt: nowIso(),
+      evidenceStoredFileName: records[0].storedName,
+      evidenceRelativePath: records[0].relativePath,
+      evidenceUploadedAt: uploadedAt,
     };
   } catch (err) {
+    // Best-effort rollback is scoped strictly to files created by this attempt.
+    await Promise.all(written.map((relativePath) => deleteEvidence(dir, relativePath)));
     logger.warn('evidence_upload_failed', {
       correlationId, route: ROUTE, leaveRequestId: requestId, result: 'error',
       code: 'EVIDENCE_UPLOAD_FAILED', detail: err instanceof Error ? err.message.slice(0, 120) : 'error',
+    });
+    logger.warn('leave_evidence_upload', {
+      correlationId, leaveRequestId: requestId, fileCount: files.length,
+      acceptedCount: 0, failedCount: files.length,
+      totalBytes: files.reduce((n, file) => n + file.size, 0), result: 'error',
     });
     await auditLog.append({ requestId, action: 'EVIDENCE_UPLOAD_FAILED', detail: 'storage write failed' });
     return { ...base, evidenceStatus: 'UPLOAD_FAILED' };
