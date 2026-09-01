@@ -14,6 +14,10 @@ type HistoryError = '' | 'AUTH' | 'NOT_LINKED' | 'LOAD';
 interface HistoryItem {
   date: string; checkin: string; checkout: string; workHours: number | null;
   employmentType: string; status: 'complete' | 'open'; summary?: string; summaries?: string[];
+  sessions?: Array<{
+    checkin: string; checkout: string; workHours: number | null; summary: string;
+    status: 'complete' | 'open' | 'orphan-checkout';
+  }>;
 }
 interface Summary { workDays: number; totalMinutes: number; }
 
@@ -205,6 +209,8 @@ export default function AttendanceHistoryPage() {
               const workSummaries = Array.isArray(item.summaries)
                 ? item.summaries.filter((value): value is string => typeof value === 'string' && value.trim() !== '')
                 : (typeof item.summary === 'string' && item.summary.trim() ? [item.summary] : []);
+              const sessions = Array.isArray(item.sessions) ? item.sessions : [];
+              const multipleSessions = sessions.length > 1;
               return (
                 <article key={item.date} className="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
                   <div className="mb-4 flex items-start justify-between gap-3">
@@ -214,6 +220,41 @@ export default function AttendanceHistoryPage() {
                     </span>
                   </div>
 
+                  {multipleSessions ? (
+                    <div className="space-y-3">
+                      {sessions.map((session, index) => (
+                        <section key={`${item.date}-session-${index}`} className="rounded-2xl border border-blue-100 bg-blue-50/40 p-4">
+                          <h4 className="mb-3 text-sm font-bold text-blue-800">รอบที่ {index + 1}</h4>
+                          <div className="grid grid-cols-2 gap-3">
+                            <div>
+                              <div className="text-xs text-slate-500">เข้า</div>
+                              <div className="mt-0.5 text-lg font-bold tabular-nums text-slate-800">{session.checkin || '-'}</div>
+                            </div>
+                            <div>
+                              <div className="text-xs text-slate-500">ออก</div>
+                              <div className="mt-0.5 text-lg font-bold tabular-nums text-slate-800">{session.checkout || 'ยังไม่ได้ออกงาน'}</div>
+                            </div>
+                          </div>
+                          <div className="mt-3 text-sm font-semibold text-blue-700">{formatWorkHours(session.workHours)}</div>
+                          <div className="mt-3 border-t border-blue-100 pt-3">
+                            <div className="text-xs font-semibold text-slate-500">สรุปงาน</div>
+                            <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-800">
+                              {session.summary || (session.status === 'complete' ? 'ไม่มีข้อมูลสรุปงาน' : 'ยังไม่ได้ออกงาน')}
+                            </p>
+                          </div>
+                        </section>
+                      ))}
+                      <div className="flex items-center justify-between rounded-xl bg-blue-700 px-4 py-3 text-white">
+                        <span className="text-sm font-semibold">รวมวันนี้</span>
+                        <span className="text-lg font-bold">{formatWorkHours(item.workHours)}</span>
+                      </div>
+                      <div className="text-right">
+                        <span className="rounded-lg bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700">
+                          {item.employmentType || 'ยังไม่ระบุ'}
+                        </span>
+                      </div>
+                    </div>
+                  ) : (<>
                   <div className="grid grid-cols-2 gap-3">
                     <div className="rounded-xl bg-slate-50 p-3">
                       <div className="text-xs text-slate-500">เข้างาน</div>
@@ -240,6 +281,7 @@ export default function AttendanceHistoryPage() {
                   {!open && (
                     <WorkSummarySection date={item.date} summaries={workSummaries} />
                   )}
+                  </>)}
                 </article>
               );
             })}

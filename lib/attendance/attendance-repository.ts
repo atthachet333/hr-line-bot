@@ -19,7 +19,8 @@
  */
 import { env } from '@/lib/env';
 import { getSheetsClient } from '@/lib/sheets/client';
-import { nowIso, sheetDateToYmd } from '@/lib/utils/datetime';
+import { nowIso } from '@/lib/utils/datetime';
+import { validateWorkSummary, type WorkSummaryValidationDetail } from '@/lib/validation/attendance';
 import {
   buildAttendanceHistory,
   type AttendanceHistoryItem,
@@ -29,8 +30,9 @@ import {
   type EmployeeKey,
   evaluateCheckin,
   evaluateCheckout,
+  findLatestOpenCheckin,
   findByClientRequestId,
-  rowMatchesEmployee,
+  getAttendancePolicy,
   summarizeDay,
 } from '@/lib/attendance/attendance-core';
 
@@ -67,6 +69,7 @@ export interface AttendanceDiag {
 export type RecordAttendanceResult =
   | { ok: true; code: 'CHECK_IN_RECORDED' | 'CHECK_OUT_RECORDED'; message: string; data: { date: string; type: AttendanceType }; diag: AttendanceDiag }
   | { ok: false; kind: 'conflict'; code: 'ALREADY_CHECKED_IN' | 'ALREADY_CHECKED_OUT' | 'NOT_CHECKED_IN'; message: string; diag: AttendanceDiag }
+  | { ok: false; kind: 'validation'; code: WorkSummaryValidationDetail; message: string; diag: AttendanceDiag }
   | { ok: false; kind: 'not_configured'; code: 'NOT_CONFIGURED'; message: string; diag: AttendanceDiag }
   | { ok: false; kind: 'io'; code: 'IO_ERROR'; message: string; diag: AttendanceDiag };
 
@@ -193,7 +196,8 @@ function diagFrom(input: RecordAttendanceInput, day: DayAttendance, reason: stri
     businessDate: input.businessDate,
     employeeResolved: input.employeeId.trim() !== '',
     candidateCount: day.candidateCount,
-    openCheckinFound: day.hasCheckin && !day.hasCheckout,
+    openCheckinFound:
+      (day.openCheckinCount ?? (day.hasCheckin && !day.hasCheckout ? 1 : 0)) > 0,
     reason,
   };
 }
@@ -205,6 +209,14 @@ function diagFrom(input: RecordAttendanceInput, day: DayAttendance, reason: stri
 export function recordAttendance(input: RecordAttendanceInput): Promise<RecordAttendanceResult> {
   return withWriteLock(async () => {
     const emptyDay: DayAttendance = { candidateCount: 0, hasCheckin: false, hasCheckout: false };
+    const normalizedSummary = input.type === 'checkout' ? validateWorkSummary(input.summary) : null;
+    if (normalizedSummary && !normalizedSummary.ok) {
+      return {
+        ok: false, kind: 'validation', code: normalizedSummary.detail,
+        message: normalizedSummary.error,
+        diag: diagFrom(input, emptyDay, 'invalid_work_summary'),
+      };
+    }
     if (!env.googleSheetId()) {
       return {
         ok: false, kind: 'not_configured', code: 'NOT_CONFIGURED',
@@ -237,9 +249,10 @@ export function recordAttendance(input: RecordAttendanceInput): Promise<RecordAt
       }
 
       const day = summarizeDay(table.rows, key, input.businessDate);
+      const policy = getAttendancePolicy(input.employmentType);
 
       if (input.type === 'checkin') {
-        const decision = evaluateCheckin(day);
+        const decision = evaluateCheckin(day, policy);
         if (!decision.allowed) {
           return { ok: false, kind: 'conflict', code: decision.code, message: decision.message, diag: diagFrom(input, day, decision.reason) };
         }
@@ -254,7 +267,7 @@ export function recordAttendance(input: RecordAttendanceInput): Promise<RecordAt
       const header = await ensureAttendanceColumns(table, sheetName);
       const { sheets, spreadsheetId } = await getSheetsClient();
       const checkinRow = input.type === 'checkout'
-        ? table.rows.find((row) => rowMatchesEmployee(row, key) && sheetDateToYmd(row.date) === input.businessDate && String(row.type).toLowerCase() === 'checkin')
+        ? findLatestOpenCheckin(table.rows, key, input.businessDate)
         : undefined;
 
       const rowValues = buildRow(header, {
@@ -266,7 +279,7 @@ export function recordAttendance(input: RecordAttendanceInput): Promise<RecordAt
         time: input.time,
         lat: input.lat,
         lng: input.lng,
-        summary: input.summary ?? '',
+        summary: input.type === 'checkout' && normalizedSummary?.ok ? normalizedSummary.value : '',
         clientRequestId: input.clientRequestId ?? '',
         empId: input.employeeId,
         employmentType: input.employmentType ?? '',

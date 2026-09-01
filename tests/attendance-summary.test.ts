@@ -144,4 +144,16 @@ describe('calculateAttendanceSummary (via buildAttendanceHistory)', () => {
     ]);
     expect(s.totalMinutes).toBe(31); // 30.5 → 31 (rounded)
   });
+
+  it('daily multi-session totals sum completed sessions but count one unique work date', () => {
+    const s = summarize([
+      row({ type: 'checkin', time: '08:00' }),
+      row({ type: 'checkout', time: '11:00', workHours: 3 }),
+      row({ type: 'checkin', time: '13:00' }),
+      row({ type: 'checkout', time: '17:30', workHours: 4.5 }),
+      row({ type: 'checkin', time: '18:00' }),
+      row({ type: 'checkout', time: '20:00', workHours: 2 }),
+    ]);
+    expect(s).toEqual({ workDays: 1, totalMinutes: 570 });
+  });
 });

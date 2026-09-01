@@ -177,6 +177,22 @@ function recordAttendance(params, type) {
   var userId = params.userId || params.displayName;
   if (!userId) return { success: false, code: 'VALIDATION_ERROR', message: 'missing user', data: null };
 
+  // This legacy endpoint must obey the same create policy as the canonical
+  // Next.js checkout route. Validate before acquiring a lock or touching Sheets.
+  var normalizedSummary = '';
+  if (type === 'checkout') {
+    if (typeof params.summary !== 'string' || params.summary.trim() === '') {
+      return { success: false, code: 'VALIDATION_ERROR', detail: 'WORK_SUMMARY_REQUIRED', message: 'work summary is required', data: null };
+    }
+    normalizedSummary = params.summary.trim();
+    if (normalizedSummary.length < 10) {
+      return { success: false, code: 'VALIDATION_ERROR', detail: 'WORK_SUMMARY_TOO_SHORT', message: 'work summary is too short', data: null };
+    }
+    if (normalizedSummary.length > 1000) {
+      return { success: false, code: 'VALIDATION_ERROR', detail: 'WORK_SUMMARY_TOO_LONG', message: 'work summary is too long', data: null };
+    }
+  }
+
   var lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
@@ -215,7 +231,7 @@ function recordAttendance(params, type) {
       params.time || '',
       params.lat || '',
       params.lng || '',
-      params.summary || '',
+      type === 'checkout' ? normalizedSummary : '',
       params.clientRequestId || '',
     ]);
     SpreadsheetApp.flush();

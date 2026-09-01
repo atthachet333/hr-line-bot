@@ -9,6 +9,7 @@ import { liffErrorMessage } from '@/lib/liff/error-messages';
 import { attendanceHistoryForwardPath } from '@/lib/liff/config';
 import {
   WORK_SUMMARY_MAX_LENGTH,
+  canSubmitCheckout,
   validateWorkSummary,
 } from '@/lib/validation/attendance';
 
@@ -96,7 +97,7 @@ export default function CheckOutPage() {
           time: timeText,
           lat: location.lat,
           lng: location.lng,
-          summary,
+          summary: validatedSummary.value,
         }),
       });
 
@@ -120,8 +121,9 @@ export default function CheckOutPage() {
 
   const closeLiff = () => liff.isInClient() ? liff.closeWindow() : setShowPopup(false);
   const summaryValidation = validateWorkSummary(summary);
-  const summaryIsValid = summaryValidation.ok;
-  const submitDisabled = !location || !summaryIsValid || isSubmitting;
+  const submitDisabled = !canSubmitCheckout({
+    hasLocation: Boolean(location), summary, isSubmitting,
+  });
 
   if (!isMounted) return <div className="min-h-screen bg-gray-100 flex items-center justify-center font-bold text-gray-900">กำลังโหลดระบบ...</div>;
 
@@ -187,11 +189,11 @@ export default function CheckOutPage() {
                 placeholder="ตัวอย่าง: ตรวจเอกสารลูกค้า, ประสานงานบริษัท A, อัปเดตข้อมูลเคส และสรุปรายงานประจำวัน"
               />
               <div className="mt-1.5 flex items-start justify-between gap-3">
-                <p id="work-summary-error" className="text-sm text-red-600" role={summaryError ? 'alert' : undefined}>
-                  {summaryError}
+                <p id="work-summary-error" className={`text-sm ${summaryError ? 'text-red-600' : 'text-gray-500'}`} role={summaryError ? 'alert' : undefined}>
+                  {summaryError || (!summaryValidation.ok ? 'ต้องกรอกอย่างน้อย 10 ตัวอักษรก่อนออกงาน' : '')}
                 </p>
                 <span id="work-summary-counter" className="ml-auto shrink-0 text-xs tabular-nums text-gray-500">
-                  {summary.length}/{WORK_SUMMARY_MAX_LENGTH}
+                  {summary.length} / {WORK_SUMMARY_MAX_LENGTH}
                 </span>
               </div>
             </div>

@@ -45,6 +45,15 @@ export function validateWorkSummary(value: unknown): WorkSummaryValidationResult
   return { ok: true, value: summary };
 }
 
+/** Pure UI gate; the server still validates independently and is authoritative. */
+export function canSubmitCheckout(input: {
+  hasLocation: boolean;
+  summary: unknown;
+  isSubmitting: boolean;
+}): boolean {
+  return input.hasLocation && !input.isSubmitting && validateWorkSummary(input.summary).ok;
+}
+
 function asNumber(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value === 'string' && value.trim() !== '') {

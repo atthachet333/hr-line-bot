@@ -54,6 +54,7 @@ beforeEach(() => {
 describe('POST /api/attendance/check-out work summary policy', () => {
   it.each([
     [undefined, 'WORK_SUMMARY_REQUIRED'],
+    [null, 'WORK_SUMMARY_REQUIRED'],
     ['', 'WORK_SUMMARY_REQUIRED'],
     ['   ', 'WORK_SUMMARY_REQUIRED'],
     ['ทำงาน', 'WORK_SUMMARY_TOO_SHORT'],
@@ -65,6 +66,18 @@ describe('POST /api/attendance/check-out work summary policy', () => {
     expect(response.status).toBe(400);
     expect(body.code).toBe('VALIDATION_ERROR');
     expect(body.detail).toBe(detail);
+    expect(recordAttendanceMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an old-client JSON payload with no summary property', async () => {
+    const response = await POST(new Request('http://localhost:3333/api/attendance/check-out', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer verified-token' },
+      body: JSON.stringify({ lat: 13.7, lng: 100.5, time: '17:30:00', clientRequestId: 'old-client' }),
+    }));
+    const body = await response.json() as Record<string, unknown>;
+    expect(response.status).toBe(400);
+    expect(body).toMatchObject({ code: 'VALIDATION_ERROR', detail: 'WORK_SUMMARY_REQUIRED' });
     expect(recordAttendanceMock).not.toHaveBeenCalled();
   });
 

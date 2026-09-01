@@ -5,6 +5,8 @@ import {
   evaluateCheckin,
   evaluateCheckout,
   findByClientRequestId,
+  findLatestOpenCheckin,
+  getAttendancePolicy,
   buildAttendanceHistory,
   type AttendanceRow,
   type EmployeeKey,
@@ -100,6 +102,28 @@ describe('evaluateCheckout', () => {
   });
 });
 
+describe('employment-type attendance policy', () => {
+  it('enables multiple sessions only for trimmed daily employment type', () => {
+    expect(getAttendancePolicy('  พนักงานรายวัน  ')).toEqual({ kind: 'daily', allowMultipleSessionsPerDay: true });
+    expect(getAttendancePolicy('พนักงานประจำ').allowMultipleSessionsPerDay).toBe(false);
+    expect(getAttendancePolicy('').allowMultipleSessionsPerDay).toBe(false);
+  });
+
+  it('daily employee may check in after a completed session but not while one is open', () => {
+    const policy = getAttendancePolicy('พนักงานรายวัน');
+    expect(evaluateCheckin({ candidateCount: 2, hasCheckin: true, hasCheckout: true, openCheckinCount: 0 }, policy).allowed).toBe(true);
+    expect(evaluateCheckin({ candidateCount: 1, hasCheckin: true, hasCheckout: false, openCheckinCount: 1 }, policy).allowed).toBe(false);
+  });
+
+  it('monthly employee remains blocked after completing the first session', () => {
+    const decision = evaluateCheckin(
+      { candidateCount: 2, hasCheckin: true, hasCheckout: true, openCheckinCount: 0 },
+      getAttendancePolicy('พนักงานประจำ'),
+    );
+    expect(decision.allowed).toBe(false);
+  });
+});
+
 describe('findByClientRequestId (idempotency)', () => {
   it('finds this employee\'s matching request/type', () => {
     const rows = [row({ empId: 'S2A001', type: 'checkin', clientRequestId: 'req-1' })];
@@ -110,6 +134,17 @@ describe('findByClientRequestId (idempotency)', () => {
     expect(findByClientRequestId(rows, A, 'checkin', 'req-1')).toBeNull();
     const rows2 = [row({ empId: 'S2A001', type: 'checkout', clientRequestId: 'req-1' })];
     expect(findByClientRequestId(rows2, A, 'checkin', 'req-1')).toBeNull();
+  });
+});
+
+describe('latest open session pairing', () => {
+  it('pairs checkout with the latest unmatched checkin', () => {
+    const rows = [
+      row({ empId: 'S2A001', type: 'checkin', time: '08:00' }),
+      row({ empId: 'S2A001', type: 'checkout', time: '11:00' }),
+      row({ empId: 'S2A001', type: 'checkin', time: '13:00' }),
+    ];
+    expect(findLatestOpenCheckin(rows, A, TODAY)?.time).toBe('13:00');
   });
 });
 
@@ -159,5 +194,20 @@ describe('buildAttendanceHistory', () => {
     ], A, 8, 2026);
     expect(history[0].summaries).toEqual(['First checkout summary', 'Second checkout summary']);
     expect(history[0].summary).toBe('Second checkout summary');
+  });
+
+  it('retains multiple sessions and sums their work hours for one unique date', () => {
+    const history = buildAttendanceHistory([
+      row({ empId: 'S2A001', type: 'checkin', time: '08:00' }),
+      row({ empId: 'S2A001', type: 'checkout', time: '11:00', workHours: 3, summary: 'จัดเรียงเอกสารลูกค้าช่วงเช้า' }),
+      row({ empId: 'S2A001', type: 'checkin', time: '13:00' }),
+      row({ empId: 'S2A001', type: 'checkout', time: '17:30', workHours: 4.5, summary: 'ประสานงานลูกค้าช่วงบ่าย' }),
+    ], A, 8, 2026, 'พนักงานรายวัน');
+    expect(history).toHaveLength(1);
+    expect(history[0].workHours).toBe(7.5);
+    expect(history[0].sessions).toEqual([
+      expect.objectContaining({ checkin: '08:00', checkout: '11:00', workHours: 3, summary: 'จัดเรียงเอกสารลูกค้าช่วงเช้า' }),
+      expect.objectContaining({ checkin: '13:00', checkout: '17:30', workHours: 4.5, summary: 'ประสานงานลูกค้าช่วงบ่าย' }),
+    ]);
   });
 });

@@ -2,7 +2,7 @@ module.exports = {
   apps: [
     {
       name: "hr-line-bot",
-      cwd: "C:\\Users\\Administrator\\Desktop\\project\\hr-line-bot",
+      cwd: "D:\\S2A_PROJECT\\hr-line-bot",
       script: "node_modules/next/dist/bin/next",
       args: "start -p 3333",
       interpreter: "node",

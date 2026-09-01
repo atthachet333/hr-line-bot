@@ -74,6 +74,9 @@ describe('repository against the reordered (target) header', () => {
     store[store.length - 1][at('summary')] = 'HR แก้ไขสรุปงานในชีตแล้ว';
     const refreshed = await getAttendanceHistory({ lineUserId: 'U-a', employeeId: 'S2A001', employmentType: 'พนักงานประจำ', month: 8, year: 2026 });
     expect(refreshed[0].summary).toBe('HR แก้ไขสรุปงานในชีตแล้ว');
+    store[store.length - 1][at('workHours')] = '8.75';
+    const editedHours = await getAttendanceHistory({ lineUserId: 'U-a', employeeId: 'S2A001', employmentType: 'พนักงานประจำ', month: 8, year: 2026 });
+    expect(editedHours[0].workHours).toBe(8.75);
   });
 
   it('legacy row with the OLD order is still matched (header-name based)', async () => {

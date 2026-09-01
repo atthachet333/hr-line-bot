@@ -91,6 +91,9 @@ export async function POST(req: Request): Promise<NextResponse> {
     });
 
     if (!result.ok) {
+      if (result.kind === 'validation') {
+        throw new ValidationError(result.message, result.code);
+      }
       if (result.kind === 'conflict') {
         throw new ConflictError(result.message, 'CONFLICT', result.code);
       }

@@ -19,6 +19,18 @@ import { parseSheetDate, sheetDateToYmd } from '@/lib/utils/datetime';
 
 export type AttendanceType = 'checkin' | 'checkout';
 
+export interface AttendancePolicy {
+  kind: 'monthly' | 'daily';
+  allowMultipleSessionsPerDay: boolean;
+}
+
+/** Unknown/blank values intentionally retain the safer existing monthly policy. */
+export function getAttendancePolicy(employmentType: unknown): AttendancePolicy {
+  return String(employmentType ?? '').trim() === 'พนักงานรายวัน'
+    ? { kind: 'daily', allowMultipleSessionsPerDay: true }
+    : { kind: 'monthly', allowMultipleSessionsPerDay: false };
+}
+
 /** A single attendance event row (long format: one row per check-in/out). */
 export interface AttendanceRow {
   /** Raw date cell as read from the sheet (string, serial number, or Date). */
@@ -38,6 +50,7 @@ export interface AttendanceRow {
 }
 
 export interface AttendanceHistoryItem {
+  employeeId: string;
   date: string;
   checkin: string;
   checkout: string;
@@ -48,6 +61,16 @@ export interface AttendanceHistoryItem {
   summary: string;
   /** Every non-empty checkout summary for this date, in sheet row order. */
   summaries: string[];
+  /** Payroll-ready session detail; retained even when daily totals are shown. */
+  sessions: AttendanceHistorySession[];
+}
+
+export interface AttendanceHistorySession {
+  checkin: string;
+  checkout: string;
+  workHours: number | null;
+  summary: string;
+  status: 'complete' | 'open' | 'orphan-checkout';
 }
 
 function timeToMinutes(value: unknown): number | null {
@@ -60,37 +83,100 @@ function timeToMinutes(value: unknown): number | null {
   return hours * 60 + minutes + seconds / 60;
 }
 
+function storedWorkHours(value: unknown): number | null {
+  if (value === '' || value === null || value === undefined) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+interface PairedSessionRows {
+  checkinRow: AttendanceRow | null;
+  checkoutRow: AttendanceRow | null;
+}
+
+/** Pair every checkout with the latest unmatched checkin, preserving Sheet order. */
+export function pairAttendanceSessions(
+  rows: readonly AttendanceRow[], key: EmployeeKey, businessDate: string,
+): PairedSessionRows[] {
+  const sessions: PairedSessionRows[] = [];
+  const open: PairedSessionRows[] = [];
+  for (const row of rows) {
+    if (!rowMatchesEmployee(row, key) || sheetDateToYmd(row.date) !== businessDate) continue;
+    const type = normalizeType(row.type);
+    if (type === 'checkin') {
+      const session = { checkinRow: row, checkoutRow: null };
+      sessions.push(session);
+      open.push(session);
+    } else if (type === 'checkout') {
+      const session = open.pop();
+      if (session) session.checkoutRow = row;
+      else sessions.push({ checkinRow: null, checkoutRow: row });
+    }
+  }
+  return sessions;
+}
+
+export function findLatestOpenCheckin(
+  rows: readonly AttendanceRow[], key: EmployeeKey, businessDate: string,
+): AttendanceRow | null {
+  const sessions = pairAttendanceSessions(rows, key, businessDate);
+  for (let index = sessions.length - 1; index >= 0; index--) {
+    const session = sessions[index];
+    if (session.checkinRow && !session.checkoutRow) return session.checkinRow;
+  }
+  return null;
+}
+
+function historySession(session: PairedSessionRows): AttendanceHistorySession {
+  const checkin = String(session.checkinRow?.time ?? '').trim();
+  const checkout = String(session.checkoutRow?.time ?? '').trim();
+  const start = timeToMinutes(checkin);
+  const end = timeToMinutes(checkout);
+  const calculated = start !== null && end !== null && end >= start ? (end - start) / 60 : null;
+  // A non-empty valid workHours cell is authoritative; legacy/invalid cells
+  // fall back to the current Sheet times.
+  const workHours = session.checkoutRow
+    ? storedWorkHours(session.checkoutRow.workHours) ?? calculated
+    : null;
+  return {
+    checkin,
+    checkout,
+    workHours,
+    summary: String(session.checkoutRow?.summary ?? '').trim(),
+    status: !session.checkinRow ? 'orphan-checkout' : session.checkoutRow ? 'complete' : 'open',
+  };
+}
+
 /** Pair this employee's event rows by Bangkok business date. Sheet values win. */
 export function buildAttendanceHistory(
   rows: readonly AttendanceRow[], key: EmployeeKey, month: number, year: number,
   fallbackEmploymentType = '',
 ): AttendanceHistoryItem[] {
-  const days = new Map<string, { checkin: string; checkout: string; employmentType: string; summaries: string[] }>();
+  const days = new Map<string, { employmentType: string }>();
   for (const row of rows) {
     if (!rowMatchesEmployee(row, key)) continue;
     const date = sheetDateToYmd(row.date);
     const parsed = parseSheetDate(row.date);
     if (!date || !parsed || parsed.getUTCFullYear() !== year || parsed.getUTCMonth() + 1 !== month) continue;
-    const type = normalizeType(row.type);
-    if (!type) continue;
-    const day = days.get(date) ?? { checkin: '', checkout: '', employmentType: '', summaries: [] };
-    if (type === 'checkin' && !day.checkin) day.checkin = String(row.time ?? '').trim();
-    if (type === 'checkout') {
-      day.checkout = String(row.time ?? '').trim();
-      const workSummary = String(row.summary ?? '').trim();
-      if (workSummary) day.summaries.push(workSummary);
-    }
+    if (!normalizeType(row.type)) continue;
+    const day = days.get(date) ?? { employmentType: '' };
     if (String(row.employmentType ?? '').trim()) day.employmentType = String(row.employmentType).trim();
     days.set(date, day);
   }
   return [...days.entries()].map(([date, day]) => {
-    const start = timeToMinutes(day.checkin);
-    const end = timeToMinutes(day.checkout);
-    const workHours = start !== null && end !== null && end >= start ? (end - start) / 60 : null;
-    return { date, checkin: day.checkin, checkout: day.checkout, workHours,
+    const sessions = pairAttendanceSessions(rows, key, date).map(historySession);
+    const completedHours = sessions
+      .filter((session) => session.status === 'complete' && session.workHours !== null)
+      .reduce((total, session) => total + (session.workHours ?? 0), 0);
+    const summaries = sessions.map((session) => session.summary).filter(Boolean);
+    const firstCheckin = sessions.find((session) => session.checkin)?.checkin ?? '';
+    const lastCheckout = sessions.findLast((session) => session.checkout)?.checkout ?? '';
+    const hasOpen = sessions.some((session) => session.status === 'open');
+    return { employeeId: key.employeeId, date, checkin: firstCheckin, checkout: lastCheckout,
+      workHours: sessions.some((session) => session.status === 'complete') ? completedHours : null,
       employmentType: day.employmentType || fallbackEmploymentType,
-      status: day.checkout ? 'complete' as const : 'open' as const,
-      summary: day.summaries.at(-1) ?? '', summaries: day.summaries };
+      status: hasOpen || !lastCheckout ? 'open' as const : 'complete' as const,
+      summary: summaries.at(-1) ?? '', summaries, sessions };
   }).sort((a, b) => b.date.localeCompare(a.date));
 }
 
@@ -155,6 +241,7 @@ export interface DayAttendance {
   candidateCount: number;
   hasCheckin: boolean;
   hasCheckout: boolean;
+  openCheckinCount?: number;
 }
 
 /**
@@ -179,7 +266,9 @@ export function summarizeDay(
     else if (t === 'checkout') hasCheckout = true;
   }
 
-  return { candidateCount, hasCheckin, hasCheckout };
+  const openCheckinCount = pairAttendanceSessions(rows, key, businessDate)
+    .filter((session) => session.checkinRow && !session.checkoutRow).length;
+  return { candidateCount, hasCheckin, hasCheckout, openCheckinCount };
 }
 
 export type CheckinDecision =
@@ -187,8 +276,12 @@ export type CheckinDecision =
   | { allowed: false; code: 'ALREADY_CHECKED_IN'; reason: 'already_checked_in'; message: string };
 
 /** Check-in is allowed once per employee per business date. */
-export function evaluateCheckin(day: DayAttendance): CheckinDecision {
-  if (day.hasCheckin) {
+export function evaluateCheckin(
+  day: DayAttendance,
+  policy: AttendancePolicy = getAttendancePolicy(''),
+): CheckinDecision {
+  const openCheckinCount = day.openCheckinCount ?? (day.hasCheckin && !day.hasCheckout ? 1 : 0);
+  if (openCheckinCount > 0 || (!policy.allowMultipleSessionsPerDay && day.hasCheckin)) {
     return {
       allowed: false,
       code: 'ALREADY_CHECKED_IN',
@@ -210,6 +303,8 @@ export type CheckoutDecision =
  * checked out" message — never the misleading "haven't checked in".
  */
 export function evaluateCheckout(day: DayAttendance): CheckoutDecision {
+  const openCheckinCount = day.openCheckinCount ?? (day.hasCheckin && !day.hasCheckout ? 1 : 0);
+  if (openCheckinCount > 0) return { allowed: true, reason: 'open_checkin' };
   if (day.hasCheckout) {
     return {
       allowed: false,
@@ -218,15 +313,12 @@ export function evaluateCheckout(day: DayAttendance): CheckoutDecision {
       message: 'วันนี้คุณได้ออกงานแล้ว',
     };
   }
-  if (!day.hasCheckin) {
-    return {
-      allowed: false,
-      code: 'NOT_CHECKED_IN',
-      reason: 'no_checkin',
-      message: 'ยังไม่ได้เช็คอินวันนี้',
-    };
-  }
-  return { allowed: true, reason: 'open_checkin' };
+  return {
+    allowed: false,
+    code: 'NOT_CHECKED_IN',
+    reason: 'no_checkin',
+    message: 'ยังไม่ได้เช็คอินวันนี้',
+  };
 }
 
 /** Whether an existing row already fulfils this (idempotent) client request. */
