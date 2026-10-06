@@ -222,6 +222,28 @@ describe('recordAttendance — daily employee multi-session policy', () => {
     expect(history[0].workHours).toBe(9.5);
   });
 
+  it('deducts only actual break overlap per session and never double-deducts split lunch', async () => {
+    const sessions = [
+      ['10:00', '12:00', 'สรุปงานช่วงเช้าก่อนพักกลางวัน'],
+      ['13:00', '17:00', 'สรุปงานช่วงบ่ายหลังพักกลางวัน'],
+    ] as const;
+    for (let index = 0; index < sessions.length; index++) {
+      const [checkin, checkout, summary] = sessions[index];
+      await recordAttendance(daily({ type: 'checkin', time: checkin, clientRequestId: `split-ci-${index}` }));
+      await recordAttendance(daily({ type: 'checkout', time: checkout, summary, clientRequestId: `split-co-${index}` }));
+    }
+
+    const header = store[0].map(String);
+    const checkoutRows = store.slice(1).filter((sheetRow) => sheetRow[header.indexOf('type')] === 'checkout');
+    expect(checkoutRows.map((sheetRow) => sheetRow[header.indexOf('workHours')])).toEqual(['2', '4']);
+
+    const history = await getAttendanceHistory({
+      lineUserId: 'U-a', employeeId: 'S2A001', employmentType: 'พนักงานรายวัน', month: 8, year: 2026,
+    });
+    expect(history[0].workHours).toBe(6);
+    expect(history[0].sessions.map((session) => session.summary)).toEqual(sessions.map((session) => session[2]));
+  });
+
   it('blocks checkin while a session is open and blocks checkout without an open session', async () => {
     expect((await recordAttendance(daily({ type: 'checkout', summary: VALID_SUMMARY }))).ok).toBe(false);
     await recordAttendance(daily({ type: 'checkin', time: '08:00' }));

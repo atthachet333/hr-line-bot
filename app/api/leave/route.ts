@@ -176,7 +176,6 @@ export async function POST(req: Request): Promise<NextResponse> {
     // 6. Server-side leave-day calculation (never trust client totalDays).
     const holidays = await loadHolidays();
     const totalDays = computeLeaveDays(input.startDate, input.endDate, {
-      countWeekends: env.leaveCountWeekends(),
       holidays,
     });
     if (totalDays < 1) {

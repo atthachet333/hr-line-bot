@@ -236,8 +236,8 @@ request id, และ transition ของ leave request (อนุมัติ 
 - **Per-request authorization** — `isAuthorisedManagerForRequest`: a manager may
   act only on their assigned request; **HR admins** (`HR_ADMIN_USER_IDS`) may
   override any request. Group postbacks must come from `MANAGER_GROUP_ID`.
-- **Server-side leave rules** — `totalDays` computed server-side (weekends via
-  `LEAVE_COUNT_WEEKENDS`, company holidays from the `Holidays` sheet); balance +
+- **Server-side leave rules** — `totalDays` computed server-side using the
+  Monday-Saturday work week (Sunday off) and holidays from the `Holidays` sheet; balance +
   overlap checked before saving.
 - **Uniform errors** — every API returns `{success:false, code, message,
   correlationId}`; technical detail stays in server logs only.
@@ -248,7 +248,6 @@ request id, และ transition ของ leave request (อนุมัติ 
 | --- | --- |
 | `HR_ADMIN_USER_IDS` | LINE user IDs ที่เป็น HR admin (override ได้ทุกคำขอ) |
 | `INTERNAL_API_SECRET` | secret ป้องกัน endpoint ภายใน (retry) — **จำเป็นใน production** |
-| `LEAVE_COUNT_WEEKENDS` | นับเสาร์อาทิตย์เป็นวันลาหรือไม่ (`true`/`false`, ค่าเริ่มต้น `false`) |
 | `SHEET_HOLIDAYS` | (optional) ชื่อชีตวันหยุด (ค่าเริ่มต้น `Holidays`) |
 | `EMPLOYEE_LINE_LOGIN_CHANNEL_ID` | channel id สำหรับตรวจ LIFF ID token |
 

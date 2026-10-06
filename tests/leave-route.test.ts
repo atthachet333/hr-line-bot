@@ -29,8 +29,11 @@ vi.mock('@/lib/repositories/audit-log-repository', () => ({
   append: (...a: unknown[]) => auditAppendMock(...a),
 }));
 
+const { loadHolidaysMock } = vi.hoisted(() => ({
+  loadHolidaysMock: vi.fn(),
+}));
 vi.mock('@/lib/repositories/holiday-repository', () => ({
-  loadHolidays: () => Promise.resolve(new Set<string>()),
+  loadHolidays: () => loadHolidaysMock(),
 }));
 
 const sendManagerNotificationMock = vi.fn().mockResolvedValue({ ok: true });
@@ -83,6 +86,7 @@ beforeEach(() => {
   createMock.mockResolvedValue(undefined);
   auditAppendMock.mockResolvedValue(undefined);
   sendManagerNotificationMock.mockResolvedValue({ ok: true });
+  loadHolidaysMock.mockResolvedValue(new Set<string>());
   // Unique verified user per test so the per-user rate limit never trips.
   userSeq += 1;
   verifyIdentityMock.mockResolvedValue({ ok: true, identity: { lineUserId: `Uemp-${userSeq}` } });
@@ -113,6 +117,46 @@ describe('POST /api/leave', () => {
     const actions = auditAppendMock.mock.calls.map((c) => (c[0] as { action: string }).action);
     expect(actions).toContain('CREATE');
     expect(actions).not.toContain('LEAVE_BALANCE_CHECK_SKIPPED');
+  });
+
+  it('counts a Saturday-only request and deducts one day from balance', async () => {
+    callEnvelopeMock.mockResolvedValue(balanceOk({ sickTotal: 30, sickUsed: 0 }));
+    const res = await POST(makeReq({ startDate: '2026-07-25', endDate: '2026-07-25' }));
+    expect(res.status).toBe(201);
+    expect(createMock.mock.calls[0][0].totalDays).toBe(1);
+    expect(callEnvelopeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects Saturday leave when no tracked balance remains', async () => {
+    callEnvelopeMock.mockResolvedValue(balanceOk({ sickTotal: 1, sickUsed: 1 }));
+    const res = await POST(makeReq({ startDate: '2026-07-25', endDate: '2026-07-25' }));
+    expect(res.status).toBe(400);
+    expect((await bodyOf(res)).code).toBe('INSUFFICIENT_LEAVE_BALANCE');
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  it('counts Friday through Monday as three days and excludes Sunday', async () => {
+    callEnvelopeMock.mockResolvedValue(balanceOk({ sickTotal: 30, sickUsed: 0 }));
+    const res = await POST(makeReq({ startDate: '2026-07-24', endDate: '2026-07-27' }));
+    expect(res.status).toBe(201);
+    expect(createMock.mock.calls[0][0].totalDays).toBe(3);
+  });
+
+  it('rejects a Sunday-only request as containing no working day', async () => {
+    callEnvelopeMock.mockResolvedValue(balanceOk({ sickTotal: 30, sickUsed: 0 }));
+    const res = await POST(makeReq({ startDate: '2026-07-26', endDate: '2026-07-26' }));
+    expect(res.status).toBe(400);
+    expect((await bodyOf(res)).code).toBe('VALIDATION_ERROR');
+    expect(createMock).not.toHaveBeenCalled();
+    expect(callEnvelopeMock).not.toHaveBeenCalled();
+  });
+
+  it('excludes a Saturday from leave and balance when it is a company holiday', async () => {
+    loadHolidaysMock.mockResolvedValue(new Set(['2026-07-25']));
+    callEnvelopeMock.mockResolvedValue(balanceOk({ sickTotal: 30, sickUsed: 0 }));
+    const res = await POST(makeReq({ startDate: '2026-07-24', endDate: '2026-07-25' }));
+    expect(res.status).toBe(201);
+    expect(createMock.mock.calls[0][0].totalDays).toBe(1);
   });
 
   it('creates the request (with warning) when getBalance times out / aborts', async () => {

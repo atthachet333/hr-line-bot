@@ -21,6 +21,7 @@ import { env } from '@/lib/env';
 import { getSheetsClient } from '@/lib/sheets/client';
 import { nowIso } from '@/lib/utils/datetime';
 import { validateWorkSummary, type WorkSummaryValidationDetail } from '@/lib/validation/attendance';
+import { calculateSessionWorkHours } from '@/lib/attendance/work-hours';
 import {
   buildAttendanceHistory,
   type AttendanceHistoryItem,
@@ -151,17 +152,6 @@ async function ensureAttendanceColumns(table: Table, sheetName: string): Promise
   }
 }
 
-function workHoursBetween(checkin: unknown, checkout: unknown): string {
-  const minutes = (value: unknown): number | null => {
-    const m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(String(value ?? '').trim());
-    if (!m) return null;
-    const result = Number(m[1]) * 60 + Number(m[2]) + Number(m[3] ?? 0) / 60;
-    return Number(m[1]) < 24 && Number(m[2]) < 60 && Number(m[3] ?? 0) < 60 ? result : null;
-  };
-  const start = minutes(checkin); const end = minutes(checkout);
-  return start !== null && end !== null && end >= start ? String(Number(((end - start) / 60).toFixed(4))) : '';
-}
-
 /** Ensure the tab exists; ignore the error when it already does. */
 async function ensureSheet(sheetName: string): Promise<void> {
   const { sheets, spreadsheetId } = await getSheetsClient();
@@ -283,7 +273,13 @@ export function recordAttendance(input: RecordAttendanceInput): Promise<RecordAt
         clientRequestId: input.clientRequestId ?? '',
         empId: input.employeeId,
         employmentType: input.employmentType ?? '',
-        workHours: input.type === 'checkout' ? workHoursBetween(checkinRow?.time, input.time) : '',
+        workHours: input.type === 'checkout'
+          ? String(calculateSessionWorkHours(
+            checkinRow?.time,
+            input.time,
+            policy.kind === 'daily',
+          ) ?? '')
+          : '',
       });
 
       await sheets.spreadsheets.values.append({

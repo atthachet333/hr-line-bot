@@ -88,9 +88,6 @@ export const env = {
     attendance: () => optional('SHEET_ATTENDANCE', 'Attendance'),
   },
 
-  // ---- Leave rules ----
-  leaveCountWeekends: () => optional('LEAVE_COUNT_WEEKENDS', 'false') === 'true',
-
   // ---- Leave evidence (optional file attachment) ----
   /** Storage root for evidence files. MUST be outside the repo (e.g. C:\S2A_DATA\...). */
   leaveEvidenceDir: () => optional('LEAVE_EVIDENCE_DIR'),

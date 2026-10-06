@@ -1,11 +1,10 @@
 import { ValidationError } from '@/lib/errors';
+import { isWorkingDay } from '@/lib/services/working-day';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DAY_MS = 86_400_000;
 
 export interface LeaveCalcOptions {
-  /** Count Saturday/Sunday as leave days (default false). */
-  countWeekends?: boolean;
   /** Company holidays as YYYY-MM-DD strings (never counted). */
   holidays?: Set<string>;
   /** Half-day support is not implemented; reject if requested. */
@@ -17,11 +16,6 @@ function toYmd(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
-/** Day of week for a YYYY-MM-DD date parsed as UTC (0=Sun..6=Sat). */
-function dowUtc(ms: number): number {
-  return new Date(ms).getUTCDay();
-}
-
 /**
  * Compute the number of leave days for an inclusive [startDate, endDate] range.
  *
@@ -29,7 +23,7 @@ function dowUtc(ms: number): number {
  *  - Dates must be YYYY-MM-DD; parsed as UTC to avoid TZ drift.
  *  - startDate must not be after endDate.
  *  - Inclusive of both endpoints.
- *  - Weekends excluded unless countWeekends=true.
+ *  - Monday-Saturday are working days; Sunday is excluded.
  *  - Company holidays always excluded.
  *  - Result is >= 0; if every day is excluded, result is 0.
  *  - Half-day is explicitly rejected (not supported this round).
@@ -56,15 +50,13 @@ export function computeLeaveDays(
     throw new ValidationError('วันที่สิ้นสุดต้องไม่อยู่ก่อนวันที่เริ่มลา');
   }
 
-  const countWeekends = opts.countWeekends ?? false;
   const holidays = opts.holidays ?? new Set<string>();
 
   let count = 0;
   for (let ms = start; ms <= end; ms += DAY_MS) {
-    const dow = dowUtc(ms);
-    const isWeekend = dow === 0 || dow === 6;
-    if (!countWeekends && isWeekend) continue;
-    if (holidays.has(toYmd(ms))) continue;
+    const date = toYmd(ms);
+    if (!isWorkingDay(date)) continue;
+    if (holidays.has(date)) continue;
     count += 1;
   }
   return count;

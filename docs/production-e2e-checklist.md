@@ -19,7 +19,7 @@ LINE + Google credentials and must be verified manually.
 - [ ] LIFF token is verified server-side (a request with a forged token → 401)
 - [ ] A user cannot spoof employeeId/name (server resolves identity itself)
 - [ ] A request is created exactly once (double-submit / retry → same requestId)
-- [ ] `totalDays` is computed on the server (weekends/holidays excluded per config)
+- [ ] `totalDays` is computed on the server (Monday-Saturday, excluding Sunday and Holidays)
 - [ ] Overlapping date ranges are rejected (`OVERLAPPING_LEAVE_REQUEST`)
 - [ ] Insufficient balance is rejected (`INSUFFICIENT_LEAVE_BALANCE`)
 - [ ] Unknown leave type is rejected (`UNKNOWN_LEAVE_TYPE`)
